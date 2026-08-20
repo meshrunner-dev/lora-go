@@ -20,10 +20,13 @@ import (
 )
 
 spi, _ := linux.OpenSPI("/dev/spidev0.0", 2_000_000)
+
+// Which line carries which signal depends entirely on the board, and
+// vendor documentation is not always right — measure yours.
 pins := lora.Pins{}
-pins.Reset, _ = linux.Output("gpiochip0", 16, true)
-pins.Busy, _ = linux.Input("gpiochip0", 24)
-pins.DIO1, _ = linux.Interrupt("gpiochip0", 22)
+pins.Reset, _ = linux.Output("gpiochip0", nreset, true)
+pins.Busy, _ = linux.Input("gpiochip0", busy)
+pins.DIO1, _ = linux.Interrupt("gpiochip0", dio1)
 
 radio, err := sx126x.Open(spi, pins, sx126x.Config{TCXO: sx126x.TCXO1V8, UseDCDC: true})
 radio.Configure(lora.Params{Frequency: 869_525_000, SF: lora.SF8,

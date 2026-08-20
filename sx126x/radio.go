@@ -73,13 +73,14 @@ type Config struct {
 	// UndocumentedRXPatch sets bit 0 of register 0x08B5, a setting that
 	// appears in no Semtech datasheet. It reached the mesh firmwares as
 	// a Semtech recommendation relayed outside the documentation, and
-	// both MeshCore and Meshtastic apply it — MeshCore specifically on
-	// boards with an SKY66122 front end, the same amplifier this
-	// project's RAK13302 carries.
+	// both MeshCore and Meshtastic apply it — MeshCore notably on boards
+	// with an SKY66122 front end.
 	//
 	// Nobody documents what it actually does. It is off by default here
 	// for that reason: enable it deliberately, and ideally measure the
-	// difference on your own hardware rather than take it on faith.
+	// difference on your own hardware rather than take it on faith. On
+	// one SKY66122 board it moved the idle noise floor by no measurable
+	// amount, while the documented boosted gain moved it by 1 dB.
 	UndocumentedRXPatch bool
 }
 
