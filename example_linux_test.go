@@ -63,7 +63,7 @@ func Example_receive() {
 	// Listen before talk: the scan refuses rather than destroy a
 	// reception, and hands the radio back the way it found it.
 	ctx := context.Background()
-	if busy, err := radio.AssessChannel(ctx, sx126x.CAD4Symbols); err == nil && !busy {
+	if busy, err := radio.AssessChannel(ctx, sx126x.CAD{}); err == nil && !busy {
 		fmt.Println("channel is free")
 	}
 

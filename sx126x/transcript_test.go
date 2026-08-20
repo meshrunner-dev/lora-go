@@ -212,7 +212,7 @@ func TestAssessChannelRestoresReception(t *testing.T) {
 	if err := r.StartReceive(); err != nil {
 		t.Fatalf("StartReceive: %v", err)
 	}
-	busy, err := r.AssessChannel(context.Background(), CAD4Symbols)
+	busy, err := r.AssessChannel(context.Background(), CAD{})
 	if err != nil {
 		t.Fatalf("AssessChannel: %v", err)
 	}
@@ -220,6 +220,40 @@ func TestAssessChannelRestoresReception(t *testing.T) {
 		t.Error("CadDetected latched but AssessChannel said free")
 	}
 	c.done()
+}
+
+// A calibration probe overrides the detection threshold per call —
+// the shape an adaptive listen-before-talk scheme needs: probe the
+// operating level's neighbours without touching any global state.
+func TestAssessChannelCustomProbe(t *testing.T) {
+	steps := append(configureScript(),
+		irqReadStep(0),
+		statusStep(stOK), // probing from standby: no restore afterwards
+		xfer{"standby for CAD", []byte{0x80, 0x00}, nil},
+		// 8 symbols (0x03), detPeak 24 = base 21 + offset 3, detMin 12.
+		xfer{"CAD params, caller's thresholds", []byte{0x88, 0x03, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00}, nil},
+		xfer{"clear CAD flags", []byte{0x02, 0x01, 0x80}, nil},
+		xfer{"CAD IRQ routing", []byte{0x08, 0x01, 0x80, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00}, nil},
+		xfer{"start CAD", []byte{0xC5}, nil},
+		irqReadStep(IRQCadDone),
+		xfer{"clear CAD outcome", []byte{0x02, 0x00, 0x80}, nil},
+	)
+	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true}, steps)
+	if err := r.Configure(meshcoreEU()); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	probe := CAD{Symbols: 8, DetectPeak: CADBasePeak(meshcoreEU().SF) + 3, DetectMin: 12}
+	busy, err := r.AssessChannel(context.Background(), probe)
+	if err != nil {
+		t.Fatalf("AssessChannel: %v", err)
+	}
+	if busy {
+		t.Error("CadDone without CadDetected must read as free")
+	}
+	c.done()
+	if got := CADBasePeak(meshcoreEU().SF); got != 21 {
+		t.Errorf("CADBasePeak(SF8) = %d, want 21 (Semtech base, SF+13)", got)
+	}
 }
 
 // The scan must refuse rather than destroy: an unread frame and a frame
@@ -232,10 +266,10 @@ func TestAssessChannelRefusals(t *testing.T) {
 	if err := r.Configure(meshcoreEU()); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	if _, err := r.AssessChannel(context.Background(), CAD4Symbols); !errors.Is(err, ErrUnreadFrame) {
+	if _, err := r.AssessChannel(context.Background(), CAD{}); !errors.Is(err, ErrUnreadFrame) {
 		t.Fatalf("with RxDone latched: err = %v, want ErrUnreadFrame", err)
 	}
-	if _, err := r.AssessChannel(context.Background(), CAD4Symbols); !errors.Is(err, ErrReceiveInProgress) {
+	if _, err := r.AssessChannel(context.Background(), CAD{}); !errors.Is(err, ErrReceiveInProgress) {
 		t.Fatalf("mid-frame: err = %v, want ErrReceiveInProgress", err)
 	}
 	c.done()

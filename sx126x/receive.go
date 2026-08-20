@@ -228,7 +228,7 @@ func (r *Radio) receiveProgress(flags IRQ) (preamble, header bool, err error) {
 	}
 	window := r.params.PreambleDuration() + 12*r.params.SymbolDuration()
 	if r.progHeader {
-		window = r.params.MaxFrameDuration(255)
+		window = r.worstCaseFrameWindow()
 	}
 	if now.Sub(r.progAnchor) > window {
 		// No frame can still legitimately be in the air: the detector
@@ -243,11 +243,102 @@ func (r *Radio) receiveProgress(flags IRQ) (preamble, header bool, err error) {
 	return flags&(IRQPreambleDetected|IRQSyncWordValid) != 0, header, nil
 }
 
+// CAD describes one channel-activity scan. The zero value is the
+// baseline: 4 symbols, Semtech's recommended detection thresholds for
+// the configured spreading factor.
+//
+// Every field is per call on purpose: adaptive listen-before-talk
+// schemes calibrate DetectPeak against the site — probing neighbouring
+// values around an operating point and stepping toward the false-
+// positive knee — and that requires overriding the threshold scan by
+// scan. The driver therefore imposes no clamp and no policy; it
+// executes the scan it is given. What the integrator should know about
+// the scale: the register is 8 bits but the useful SX126x range is
+// roughly 18-32, values much above 40 leave CAD effectively blind
+// (listen-before-talk silently off), values well below the base make
+// every scan read busy, and thresholds quoted for the LR11xx family
+// live on a different chip's correlation scale entirely.
+type CAD struct {
+	// Symbols is how many symbols the scan listens for: 1, 2, 4, 8 or
+	// 16. More symbols, more reliable, longer. 0 means 4 — better
+	// mid-payload detection than shorter scans, and most of a frame's
+	// airtime is payload.
+	Symbols uint8
+
+	// DetectPeak is the correlator's peak-to-noise threshold — a
+	// despreader quantity, not a dBm level. 0 means CADBasePeak of the
+	// configured spreading factor. Higher = hears only strong signals.
+	DetectPeak byte
+
+	// DetectMin is the floor under the peak search. 0 means 10,
+	// Semtech's universal recommendation; adaptive schemes leave it
+	// alone.
+	DetectMin byte
+}
+
+// CADBasePeak is Semtech's recommended detection peak for a spreading
+// factor (AN1200.48): the reference point adaptive schemes offset from.
+func CADBasePeak(sf lora.SpreadingFactor) byte { return byte(sf) + 13 }
+
+// resolve fills the defaults in and maps the symbol count to the
+// chip's encoding.
+func (c CAD) resolve(sf lora.SpreadingFactor) (symbols, peak, minimum byte, err error) {
+	switch c.Symbols {
+	case 0, 4:
+		symbols = 0x02
+	case 1:
+		symbols = 0x00
+	case 2:
+		symbols = 0x01
+	case 8:
+		symbols = 0x03
+	case 16:
+		symbols = 0x04
+	default:
+		return 0, 0, 0, fmt.Errorf("%w: CAD over %d symbols (1, 2, 4, 8 or 16)",
+			ErrBadConfig, c.Symbols)
+	}
+	peak = c.DetectPeak
+	if peak == 0 {
+		peak = CADBasePeak(sf)
+	}
+	minimum = c.DetectMin
+	if minimum == 0 {
+		minimum = 10
+	}
+	return symbols, peak, minimum, nil
+}
+
+// symbolCount recovers the listen length from the resolved encoding.
+func (c CAD) symbolCount() int {
+	if c.Symbols == 0 {
+		return 4
+	}
+	return int(c.Symbols)
+}
+
+// worstCaseFrameWindow bounds how long a committed frame can still
+// legitimately be in the air. With an explicit header the coding rate
+// travels IN the header, per frame: a channel configured at 4/5 can
+// carry a 4/8 frame, so the bound must assume the slowest rate and the
+// longest payload, whatever Configure said. Deliberately generous — a
+// margin on a safety net costs nothing, while expiring early would let
+// a destructive operation start on top of a frame that is still
+// arriving.
+func (r *Radio) worstCaseFrameWindow() time.Duration {
+	p := r.params
+	p.CR = lora.CR8
+	p.CRC = true
+	w := p.MaxFrameDuration(255)
+	return w + w/4 + 100*time.Millisecond
+}
+
 // AssessChannel performs a channel activity detection: a short listen
 // answering "is a LoRa transmission under way right now?". It reports
 // true when the channel is busy. Far cheaper than a full reception —
 // tens of milliseconds — which is what makes listen-before-talk
-// affordable.
+// affordable. The zero CAD scans with the recommended defaults; see
+// CAD for per-call tuning.
 //
 // CAD borrows the radio: the chip leaves RX for the scan and the IRQ
 // routing is temporarily CAD's. Both are restored before returning, on
@@ -257,9 +348,13 @@ func (r *Radio) receiveProgress(flags IRQ) (preamble, header bool, err error) {
 // (ErrUnreadFrame) the scan refuses instead of destroying it: the scan
 // that kills the reception it was protecting is the classic
 // listen-before-talk self-sabotage.
-func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (busy bool, err error) {
+func (r *Radio) AssessChannel(ctx context.Context, cad CAD) (busy bool, err error) {
 	if !r.ready {
 		return false, ErrNotConfigured
+	}
+	symbols, peak, minimum, err := cad.resolve(r.params.SF)
+	if err != nil {
+		return false, err
 	}
 	if err := r.guardDestructive(); err != nil {
 		return false, err
@@ -283,7 +378,7 @@ func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (busy boo
 		return false, err
 	}
 	if _, err := r.dev.cmd(opSetCadParams,
-		byte(symbols), cadDetPeak(r.params.SF), cadDetMin,
+		symbols, peak, minimum,
 		0x00 /* exit to standby */, 0x00, 0x00, 0x00); err != nil {
 		return false, err
 	}
@@ -305,7 +400,7 @@ func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (busy boo
 
 	// A CAD is bounded by construction; the ceiling only guards against
 	// a chip that never answers.
-	deadline := r.params.SymbolDuration()*time.Duration(symbolCount(symbols)+8) + 100*time.Millisecond
+	deadline := r.params.SymbolDuration()*time.Duration(cad.symbolCount()+8) + 100*time.Millisecond
 	cadCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
@@ -361,58 +456,4 @@ func (r *Radio) packetStatus() (rssi, snr float64, err error) {
 		return 0, 0, err
 	}
 	return -float64(rx[2]) / 2, float64(int8(rx[3])) / 4, nil
-}
-
-// CADSymbols is how many symbols a channel assessment listens for. More
-// symbols means a more reliable answer and a longer listen.
-type CADSymbols byte
-
-// Symbol counts the chip supports.
-const (
-	CAD1Symbol   CADSymbols = 0x00
-	CAD2Symbols  CADSymbols = 0x01
-	CAD4Symbols  CADSymbols = 0x02
-	CAD8Symbols  CADSymbols = 0x03
-	CAD16Symbols CADSymbols = 0x04
-)
-
-func symbolCount(s CADSymbols) int {
-	switch s {
-	case CAD1Symbol:
-		return 1
-	case CAD2Symbols:
-		return 2
-	case CAD4Symbols:
-		return 4
-	case CAD8Symbols:
-		return 8
-	default:
-		return 16
-	}
-}
-
-// CAD detection thresholds Semtech recommends (application note
-// AN1200.48): the minimum is 10 across the board, the peak scales with
-// the spreading factor.
-const cadDetMin byte = 10
-
-func cadDetPeak(sf lora.SpreadingFactor) byte {
-	switch sf {
-	case lora.SF5:
-		return 18
-	case lora.SF6:
-		return 19
-	case lora.SF7:
-		return 20
-	case lora.SF8:
-		return 21
-	case lora.SF9:
-		return 22
-	case lora.SF10:
-		return 23
-	case lora.SF11:
-		return 24
-	default:
-		return 25
-	}
 }

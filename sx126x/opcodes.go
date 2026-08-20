@@ -44,6 +44,13 @@ const (
 	// inverted-IQ reception is quietly degraded.
 	regIQPolarity = 0x0736
 
+	// regRxGain is shared: bits 1:0 select the gain mode, bits 7:2 are
+	// AgcSensiAdjust — the band-specific RSSI/AGC calibration of DS
+	// §6.1.6. The classic 0x94/0x96 byte values embed the 868-915 MHz
+	// calibration (0x96>>2 = 0x25); writing them verbatim on a
+	// sub-600 MHz channel would silently install the wrong band's AGC
+	// tuning. This driver currently targets the 868-915 band, where the
+	// verbatim write is exactly right.
 	regRxGain    = 0x08AC
 	regOCPConfig = 0x08E7
 

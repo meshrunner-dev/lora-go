@@ -40,9 +40,10 @@ type cli struct {
 	Boost bool   `help:"Enable boosted RX gain (datasheet 9.6): ~1 dB of sensitivity for extra current."`
 	Patch bool   `help:"Enable the undocumented 0x08B5 register patch. Nobody knows what it does; measure before trusting it."`
 
-	Scan   time.Duration `default:"0"   help:"Sample the noise floor for this long before listening."`
-	Listen time.Duration `default:"30s" help:"How long to listen for frames."`
-	AGC    time.Duration `default:"0"   help:"Reset the AGC on this interval while listening (repeaters commonly use 4s)."`
+	Scan    time.Duration `default:"0"   help:"Sample the noise floor for this long before listening."`
+	Listen  time.Duration `default:"30s" help:"How long to listen for frames."`
+	AGC     time.Duration `default:"0"   help:"Reset the AGC on this interval while listening (repeaters commonly use 4s)."`
+	CADPeak uint8         `default:"0"   help:"Override the CAD detection peak (0 = Semtech base for the SF). For site studies."`
 }
 
 var errUnknownTCXO = errors.New("unknown TCXO voltage")
@@ -183,7 +184,7 @@ func (c *cli) identify(radio *sx126x.Radio, params lora.Params) error {
 func (c *cli) assess(ctx context.Context, radio *sx126x.Radio) error {
 	for i := range 3 {
 		start := time.Now()
-		busy, err := radio.AssessChannel(ctx, sx126x.CAD4Symbols)
+		busy, err := radio.AssessChannel(ctx, sx126x.CAD{DetectPeak: c.CADPeak})
 		if err != nil {
 			return err
 		}
