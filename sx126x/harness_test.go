@@ -143,6 +143,7 @@ func openScript() []xfer {
 	}
 	copy(version[4:], "SX1262")
 	s := []xfer{
+		{"post-reset flush: raw standby", []byte{0x80, 0x00}, nil},
 		{"standby RC", []byte{0x80, 0x00}, nil},
 		{"TCXO 1.8V, 640 ticks", []byte{0x97, 0x02, 0x00, 0x02, 0x80}, nil},
 		{"clear device errors", []byte{0x07, 0x00, 0x00}, nil},

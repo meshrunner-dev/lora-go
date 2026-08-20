@@ -146,9 +146,9 @@ func Open(spi lora.SPI, pins lora.Pins, cfg Config) (*Radio, error) {
 		return nil, err
 	}
 
-	// Identify the part. Some clones leave the version area blank, so
-	// only patterns a working chip cannot produce are fatal; anything
-	// readable is kept for Version.
+	// Read the version area — as a liveness probe, not an identity
+	// (see Version for why it cannot be one). Only patterns a working
+	// chip cannot produce are fatal.
 	raw, err := r.dev.readRegister(regVersionString, 16)
 	if err != nil {
 		return nil, err
@@ -243,8 +243,14 @@ func versionString(raw []byte) string {
 	return string(raw[:end])
 }
 
-// Version returns whatever the chip's version register holds — usually
-// a part name such as "SX1262", sometimes blank on clones.
+// Version returns whatever the chip's version register holds. It
+// proves something answered the bus and nothing more: genuine SX1262
+// silicon widely reports "SX1261 V2D 2D02" here — a known hardware
+// quirk (RadioLib issue #683) the reference driver also works around —
+// and clones may leave the area blank. Never derive the part variant
+// from it: transmit-path decisions like the PA configuration tables
+// must come from the integrator's declaration, because on that choice
+// the two parts differ enough to destroy a front end.
 func (r *Radio) Version() string { return r.version }
 
 // Configure applies a channel: frequency, modulation and framing. It

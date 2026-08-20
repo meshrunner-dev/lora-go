@@ -21,7 +21,7 @@ func TestOpenTranscript(t *testing.T) {
 // succeed its way into a Radio that will never hear anything.
 func TestOpenNoDevice(t *testing.T) {
 	c := &chip{t: t, steps: []xfer{
-		{"standby RC, dead bus", []byte{0x80, 0x00}, []byte{0x00, 0x00}},
+		{"post-reset flush, dead bus", []byte{0x80, 0x00}, []byte{0x00, 0x00}},
 	}}
 	pins := lora.Pins{Reset: &fakePin{c}, Busy: &fakeBusy{c}, DIO1: &fakeDIO1{c: c, edges: make(chan struct{}, 1)}}
 	_, err := Open(&fakeSPI{c}, pins, Config{})
@@ -33,8 +33,8 @@ func TestOpenNoDevice(t *testing.T) {
 // A TCXO misconfiguration must fail Open with the crystal verdict, not
 // return a deaf Radio.
 func TestOpenCrystalFailure(t *testing.T) {
-	steps := openScript()[:10] // up to the crystal verdict
-	steps[9] = xfer{"crystal verdict: XOSC_START_ERR", []byte{0x17, 0x00, 0x00, 0x00},
+	steps := openScript()[:11] // up to the crystal verdict
+	steps[10] = xfer{"crystal verdict: XOSC_START_ERR", []byte{0x17, 0x00, 0x00, 0x00},
 		[]byte{stOK, stOK, 0x00, 0x20}}
 	c := &chip{t: t, steps: steps}
 	pins := lora.Pins{Reset: &fakePin{c}, Busy: &fakeBusy{c}, DIO1: &fakeDIO1{c: c, edges: make(chan struct{}, 1)}}

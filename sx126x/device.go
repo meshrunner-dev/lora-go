@@ -27,6 +27,12 @@ type device struct {
 	// tests shrink it so timeout paths run fast.
 	busyTimeout time.Duration
 
+	// lastOp is the previous opcode sent: the status byte the chip
+	// clocks back during a command describes the command BEFORE it —
+	// the chip cannot know the outcome of bytes it is still receiving —
+	// so failures must be attributed one step back.
+	lastOp byte
+
 	// tx/rx are reused across transfers so a polling loop allocates
 	// nothing. Safe only because of the single-owner rule.
 	tx, rx []byte
@@ -90,15 +96,19 @@ func (d *device) cmd(op byte, args ...byte) ([]byte, error) {
 	if err := d.xfer(n); err != nil {
 		return nil, fmt.Errorf("sx126x: command 0x%02X: %w", op, err)
 	}
+	prev := d.lastOp
+	d.lastOp = op
 	if n >= 2 {
 		if err := parseStatus(d.rx[1]); err != nil {
-			return nil, fmt.Errorf("sx126x: command 0x%02X: %w", op, err)
+			return nil, fmt.Errorf("sx126x: command 0x%02X (reported while sending 0x%02X): %w",
+				prev, op, err)
 		}
 	}
 	return d.rx, nil
 }
 
-// parseStatus screens the status byte every command clocks back.
+// parseStatus screens the status byte every command clocks back. The
+// verdict applies to the PREVIOUS command (see device.lastOp).
 // All-zeros and all-ones cannot be produced by a working chip driving
 // MISO; they are what a floating or grounded line reads as.
 func parseStatus(st byte) error {
@@ -211,5 +221,22 @@ func (d *device) reset() error {
 		return fmt.Errorf("sx126x: release NRESET: %w", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	return d.waitBusy()
+	if err := d.waitBusy(); err != nil {
+		return err
+	}
+	// Flush the in-band status: right after power-on it holds garbage
+	// that would otherwise be blamed on the first real command, and the
+	// field only refreshes when a command actually executes — GetStatus
+	// is not enough — so the flush is a harmless standby, sent raw. Its
+	// response also proves someone is on the bus at all.
+	var ftx, frx [2]byte
+	ftx[0] = opSetStandby
+	if err := d.spi.Transfer(ftx[:], frx[:]); err != nil {
+		return fmt.Errorf("sx126x: post-reset flush: %w", err)
+	}
+	if frx[1] == 0x00 || frx[1] == 0xFF {
+		return ErrNoDevice
+	}
+	d.lastOp = opSetStandby
+	return nil
 }
