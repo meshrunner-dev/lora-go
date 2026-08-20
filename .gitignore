@@ -1,0 +1,14 @@
+# Binaries and test artifacts
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# `go build ./cmd/<name>` without -o drops the binary at the module root.
+/lorabench
+
+# Editor droppings
+*.swp
+.idea/
+.vscode/
