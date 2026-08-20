@@ -35,7 +35,8 @@ type cli struct {
 	SyncWord uint8  `default:"0x12" help:"Sync word."`
 
 	TCXO   uint8         `default:"2" help:"TCXO supply code (2 = 1.8 V), 255 for none."`
-	Listen time.Duration `default:"30s" help:"How long to listen."`
+	Listen time.Duration `default:"30s" help:"How long to listen for frames."`
+	Scan   time.Duration `default:"0" help:"Sample the noise floor for this long before listening."`
 }
 
 func main() {
@@ -150,6 +151,13 @@ func (c *cli) run() error {
 			sum/float64(n), lo, hi, thermal)
 		if sum/float64(n) < thermal+6 {
 			fmt.Println("                        au niveau thermique: aucune énergie RF (antenne débranchée ?)")
+		}
+	}
+
+	if c.Scan > 0 {
+		fmt.Println()
+		if err := scanFloor(ctx, radio, params, c.Scan); err != nil {
+			return err
 		}
 	}
 
