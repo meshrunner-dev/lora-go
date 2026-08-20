@@ -86,6 +86,15 @@ linters:
       - path: ^linux/spi\.go$
         linters: [gosec]
 
+      # The compiled quickstart: it exists so the toolchain keeps the
+      # README honest, not to run — there is no hardware in CI to
+      # assert output against, and log.Fatal after defer is the honest
+      # shape of a main-like example.
+      - path: ^example_linux_test\.go$
+        linters:
+          - testableexamples
+          - gocritic
+
       # Test files: pinned byte transcripts trip length and duplication
       # linters by design.
       - path: _test\.go
