@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -35,6 +36,9 @@ type cli struct {
 	SyncWord uint8  `default:"0x12" help:"Sync word."`
 
 	TCXO   uint8         `default:"2" help:"TCXO supply code (2 = 1.8 V), 255 for none."`
+	Boost  bool          `help:"Enable boosted RX gain (datasheet 9.6)."`
+	Patch  bool          `help:"Enable the undocumented 0x08B5 RX patch."`
+	AGC    time.Duration `default:"0" help:"Reset the AGC on this interval while listening (repeaters commonly use 4s)."`
 	Listen time.Duration `default:"30s" help:"How long to listen for frames."`
 	Scan   time.Duration `default:"0" help:"Sample the noise floor for this long before listening."`
 }
@@ -67,8 +71,10 @@ func (c *cli) run() error {
 	}
 
 	radio, err := sx126x.Open(spi, pins, sx126x.Config{
-		TCXO:    sx126x.TCXOVoltage(c.TCXO),
-		UseDCDC: true,
+		TCXO:                sx126x.TCXOVoltage(c.TCXO),
+		UseDCDC:             true,
+		RXBoostedGain:       c.Boost,
+		UndocumentedRXPatch: c.Patch,
 	})
 	if err != nil {
 		return err
@@ -80,6 +86,7 @@ func (c *cli) run() error {
 		return err
 	}
 	fmt.Printf("Radio ouverte         : mode=%s, dernière commande=%s\n", mode, cmd)
+	fmt.Printf("Réglages récepteur    : gain boosté=%v, patch 0x08B5=%v\n", c.Boost, c.Patch)
 	if errs, err := radio.DeviceErrors(); err == nil {
 		fmt.Printf("Erreurs matérielles   : %s\n", errs)
 	}
@@ -166,11 +173,47 @@ func (c *cli) run() error {
 	defer cancel()
 
 	count := 0
+	nextAGC := time.Now().Add(c.AGC)
+	agcDone, agcDeferred := 0, 0
+	var agcTotal time.Duration
 	for {
-		frame, err := radio.Receive(deadline)
+		// A repeater resets the AGC on a timer; the reset refuses while a
+		// frame is arriving, which is the whole point — it never costs a
+		// reception, it just waits for the next opportunity.
+		if c.AGC > 0 && time.Now().After(nextAGC) {
+			resetStart := time.Now()
+			switch err := radio.ResetAGC(); {
+			case err == nil:
+				agcDone++
+				agcTotal += time.Since(resetStart)
+				if err := radio.StartReceive(); err != nil {
+					return err
+				}
+			case errors.Is(err, sx126x.ErrReceiveInProgress):
+				agcDeferred++
+			default:
+				return err
+			}
+			nextAGC = time.Now().Add(c.AGC)
+		}
+		// Bound the wait so periodic maintenance still runs on a quiet
+		// channel: a Receive that blocks until the next frame starves
+		// everything else the owner has to do.
+		wait := deadline
+		var cancelWait context.CancelFunc
+		if c.AGC > 0 {
+			wait, cancelWait = context.WithDeadline(deadline, nextAGC)
+		}
+		frame, err := radio.Receive(wait)
+		if cancelWait != nil {
+			cancelWait()
+		}
 		if err != nil {
 			if deadline.Err() != nil {
 				break
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue // maintenance window, not a failure
 			}
 			fmt.Printf("  trame rejetée: %v\n", err)
 			continue
@@ -180,6 +223,15 @@ func (c *cli) run() error {
 			frame.At.Format("15:04:05.000"), len(frame.Payload), frame.RSSI, frame.SNR)
 		describe(frame.Payload)
 	}
-	fmt.Printf("\n%d trame(s) reçue(s).\n", count)
+	fmt.Printf("\n%d trame(s) reçue(s)", count)
+	if c.AGC > 0 {
+		fmt.Printf(", %d reset AGC (%d différés)", agcDone, agcDeferred)
+		if agcDone > 0 {
+			fmt.Printf(", %v par reset, %.1f%% du temps sourd",
+				(agcTotal / time.Duration(agcDone)).Round(100*time.Microsecond),
+				100*agcTotal.Seconds()/c.Listen.Seconds())
+		}
+	}
+	fmt.Println(".")
 	return nil
 }

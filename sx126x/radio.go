@@ -23,7 +23,11 @@ import (
 // Operational errors.
 var (
 	ErrNotConfigured = errors.New("sx126x: no channel configured")
-	ErrTimeout       = errors.New("sx126x: timed out")
+
+	// ErrReceiveInProgress reports a destructive operation refused
+	// because a frame was arriving. Retry once the air is quiet.
+	ErrReceiveInProgress = errors.New("sx126x: reception in progress")
+	ErrTimeout           = errors.New("sx126x: timed out")
 )
 
 // TCXOVoltage is the supply the chip provides to a temperature-
@@ -61,6 +65,22 @@ type Config struct {
 	// UseDCDC selects the DC-DC regulator over the LDO: less current at
 	// the cost of needing the inductor the module may or may not have.
 	UseDCDC bool
+
+	// RXBoostedGain trades current for sensitivity in the low-noise
+	// amplifier (datasheet 9.6). Worth it on a mains-powered repeater.
+	RXBoostedGain bool
+
+	// UndocumentedRXPatch sets bit 0 of register 0x08B5, a setting that
+	// appears in no Semtech datasheet. It reached the mesh firmwares as
+	// a Semtech recommendation relayed outside the documentation, and
+	// both MeshCore and Meshtastic apply it — MeshCore specifically on
+	// boards with an SKY66122 front end, the same amplifier this
+	// project's RAK13302 carries.
+	//
+	// Nobody documents what it actually does. It is off by default here
+	// for that reason: enable it deliberately, and ideally measure the
+	// difference on your own hardware rather than take it on faith.
+	UndocumentedRXPatch bool
 }
 
 // Radio is a configured transceiver.
@@ -122,6 +142,9 @@ func Open(spi lora.SPI, pins lora.Pins, cfg Config) (*Radio, error) {
 	if _, err := r.dev.cmd(opSetPacketType, packetTypeLoRa); err != nil {
 		return nil, err
 	}
+	if err := r.applyRXTuning(); err != nil {
+		return nil, err
+	}
 
 	// Prove the crystal runs: force it on and see whether the chip
 	// complains. Without this, a bad TCXO setting only shows up as every
@@ -151,7 +174,23 @@ func (r *Radio) Configure(p lora.Params) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
+	if err := r.applyChannel(p); err != nil {
+		return err
+	}
+	r.params = p
+	r.ready = true
+	return nil
+}
+
+// applyChannel programs a channel onto the chip. It is separate from
+// Configure so a reset can replay it verbatim: after a calibration the
+// safe assumption is that everything is gone, not just the parts the
+// datasheet mentions.
+func (r *Radio) applyChannel(p lora.Params) error {
 	if _, err := r.dev.cmd(opSetStandby, standbyRC); err != nil {
+		return err
+	}
+	if _, err := r.dev.cmd(opSetPacketType, packetTypeLoRa); err != nil {
 		return err
 	}
 
@@ -192,9 +231,90 @@ func (r *Radio) Configure(p lora.Params) error {
 		return err
 	}
 
-	r.params = p
-	r.ready = true
+	// Any calibration can clear the receiver tuning, and an image
+	// calibration ran above, so re-apply rather than assume.
+	return r.applyRXTuning()
+}
+
+// applyRXTuning writes the receiver settings that are not part of the
+// channel: boosted gain and the undocumented patch. Both are silently
+// cleared by calibration, so this is called after every one.
+func (r *Radio) applyRXTuning() error {
+	if r.cfg.RXBoostedGain {
+		if err := r.dev.writeRegister(regRxGain, 0x96); err != nil {
+			return err
+		}
+	}
+	if r.cfg.UndocumentedRXPatch {
+		// Read-modify-write: only bit 0 is ours to touch, and whatever
+		// else lives in this register is unknown territory.
+		cur, err := r.dev.readRegister(regRXPatch, 1)
+		if err != nil {
+			return err
+		}
+		if err := r.dev.writeRegister(regRXPatch, cur[0]|0x01); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// ResetAGC restarts the receiver's analogue front end.
+//
+// Some sites need this periodically: the automatic gain control can
+// settle after a strong local burst and never recover on its own,
+// leaving the node deaf with no error to show for it. Repeaters
+// commonly schedule it every few seconds.
+//
+// It is destructive — the front end is powered down and recalibrated —
+// so it refuses while a frame is arriving and returns
+// ErrReceiveInProgress; the caller should simply try again later rather
+// than sacrifice the reception.
+//
+// Calibration silently clears settings that have nothing to do with
+// calibration: the image band reverts to 902-928 MHz, and the receiver
+// tuning is lost. Everything is re-applied here from the stored
+// configuration, so a caller cannot forget.
+func (r *Radio) ResetAGC() error {
+	if !r.ready {
+		return ErrNotConfigured
+	}
+	preamble, header, err := r.ReceiveInProgress()
+	if err != nil {
+		return err
+	}
+	if preamble || header {
+		return ErrReceiveInProgress
+	}
+
+	if _, err := r.dev.cmd(opSetSleep, 0x04); err != nil { // warm sleep
+		return err
+	}
+	time.Sleep(time.Millisecond) // let the analogue front end actually drop
+	if err := r.dev.wake(); err != nil {
+		return err
+	}
+	if _, err := r.dev.cmd(opSetStandby, standbyRC); err != nil {
+		return err
+	}
+	if _, err := r.dev.cmd(opCalibrate, 0x7F); err != nil {
+		return err
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := r.dev.waitBusy(time.Second); err != nil {
+		return err
+	}
+
+	if r.cfg.DIO2AsRFSwitch {
+		if _, err := r.dev.cmd(opSetDio2AsRfSwitch, 0x01); err != nil {
+			return err
+		}
+	}
+	// Replay the entire channel. Working out exactly which settings a
+	// calibration clears is a losing game — the datasheet is silent, and
+	// a single forgotten one leaves a radio that looks configured and
+	// hears nothing. Reprogramming costs a handful of SPI commands.
+	return r.applyChannel(r.params)
 }
 
 // setPacketParams programs the framing. payloadLen matters only with an

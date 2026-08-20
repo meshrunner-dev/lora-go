@@ -38,7 +38,12 @@ const (
 
 	regLoRaSyncWordMSB = 0x0740
 	regRxGain          = 0x08AC
-	regOCPConfig       = 0x08E7
+
+	// regRXPatch is undocumented: setting bit 0 is reported to improve
+	// reception, and no Semtech document says why. See
+	// Config.UndocumentedRXPatch.
+	regRXPatch   = 0x08B5
+	regOCPConfig = 0x08E7
 )
 
 // Standby oscillator selection for SetStandby.

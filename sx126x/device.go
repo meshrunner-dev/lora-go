@@ -51,6 +51,18 @@ func (d *device) waitBusy(timeout time.Duration) error {
 	}
 }
 
+// wake brings the chip out of sleep.
+//
+// Sleep inverts the usual handshake: BUSY stays high until an SPI
+// transaction pulls NSS low, so waiting for BUSY first — as every other
+// command does — deadlocks. The transfer must come before the wait.
+func (d *device) wake() error {
+	if _, err := d.spi.Transfer([]byte{opGetStatus, 0x00}); err != nil {
+		return fmt.Errorf("sx126x: wake: %w", err)
+	}
+	return d.waitBusy(time.Second)
+}
+
 // cmd issues a command and returns the full-duplex response. The first
 // returned byte is what the chip drove while receiving the opcode, which
 // for most commands is the device status.
