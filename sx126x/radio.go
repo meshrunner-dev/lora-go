@@ -76,6 +76,19 @@ type Config struct {
 	TCXO        TCXOVoltage
 	TCXOTimeout time.Duration // crystal settling allowance; 10 ms is ample
 
+	// Chip is the exact part variant, declared by the integrator —
+	// required for transmit, where the PA tables differ destructively
+	// between SX1261 and SX1262/68, and impossible to autodetect (the
+	// version register lies; see Version). Reception works without it.
+	Chip ChipVariant
+
+	// MaxTxPower is the hard ceiling, in dBm chip-side, on transmit
+	// power. Zero — the zero value — disables transmit entirely:
+	// emitting is something an integrator enables deliberately, with a
+	// number. Transmit refuses above the ceiling rather than clamping
+	// to it. For a ceiling of exactly 0 dBm, use MaxTxPowerZero.
+	MaxTxPower int8
+
 	// DIO2AsRFSwitch lets the chip drive the antenna switch itself. On
 	// boards that route the switch to the host instead, leave it false
 	// and provide Pins.RF.
@@ -199,6 +212,11 @@ func (r *Radio) initChip() error {
 		return err
 	}
 	if _, err := r.dev.cmd(opSetPacketType, packetTypeLoRa); err != nil {
+		return err
+	}
+	// Fall back to STDBY_RC after TX/RX — the chip's default, written
+	// anyway so the assumption is pinned rather than inherited.
+	if _, err := r.dev.cmd(opSetRxTxFallbackMode, 0x20); err != nil {
 		return err
 	}
 

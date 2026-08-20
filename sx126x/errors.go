@@ -44,6 +44,11 @@ var (
 	// finished reception has not been collected. Poll first.
 	ErrUnreadFrame = errors.New("sx126x: unread frame pending")
 
+	// ErrPowerExceedsCap: the requested transmit power is above the
+	// integrator's Config.MaxTxPower. Refused, never clamped — the
+	// ceiling is a promise.
+	ErrPowerExceedsCap = errors.New("sx126x: transmit power exceeds the configured ceiling")
+
 	// ErrCRC: the frame arrived but failed its checksum. Expected
 	// traffic, not a fault.
 	ErrCRC = errors.New("sx126x: frame failed CRC")

@@ -53,8 +53,10 @@ func TestOpenRetryBudgetExhausted(t *testing.T) {
 // A TCXO misconfiguration must fail Open with the crystal verdict, not
 // return a deaf Radio.
 func TestOpenCrystalFailure(t *testing.T) {
-	steps := openScript()[:11] // up to the crystal verdict
-	steps[10] = xfer{"crystal verdict: XOSC_START_ERR", []byte{0x17, 0x00, 0x00, 0x00},
+	full := openScript()
+	i := stepIndex(full, "crystal verdict")
+	steps := full[:i+1]
+	steps[i] = xfer{"crystal verdict: XOSC_START_ERR", []byte{0x17, 0x00, 0x00, 0x00},
 		[]byte{stOK, stOK, 0x00, 0x20}}
 	c := &chip{t: t, steps: steps}
 	pins := lora.Pins{Reset: &fakePin{c}, Busy: &fakeBusy{c}, DIO1: &fakeDIO1{c: c, edges: make(chan struct{}, 1)}}

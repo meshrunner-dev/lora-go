@@ -21,6 +21,7 @@ const (
 	opSetCadParams         = 0x88
 	opSetBufferBaseAddress = 0x8F
 	opSetDio2AsRfSwitch    = 0x9D
+	opSetRxTxFallbackMode  = 0x93
 	opSetDio3AsTcxoCtrl    = 0x97
 	opSetDioIrqParams      = 0x08
 	opGetIrqStatus         = 0x12
@@ -49,6 +50,11 @@ const (
 	// DS §6.1.6. The byte is always built from the configured band (see
 	// rxGainByte); the classic 0x94/0x96 constants would hardwire the
 	// 868-915 MHz column into every channel.
+	// regTxClampConfig carries the errata §15.2 workaround for the
+	// high-power PA (SX1262/68): OR in 0x1E for better resistance to
+	// antenna mismatch, or the clamping eats up to 5-6 dB of output.
+	regTxClampConfig = 0x08D8
+
 	regRxGain = 0x08AC
 
 	// regSensitivityConfig carries the errata §15.1 workaround: bit 2

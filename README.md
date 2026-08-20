@@ -72,7 +72,7 @@ latency rather than the event itself.
 |---|---|
 | `lora` | modulation parameters with strict validation, symbol/preamble/frame durations, airtime, SPI/GPIO/RF-switch interfaces |
 | `lora/linux` | spidev via raw ioctl (no SPI library), GPIO via the chardev uAPI v2 |
-| `lora/sx126x` | SX1261/1262/1268 driver: bring-up with TCXO proof, calibration with verdicts, CAD, receive, AGC reset, sleep/wake/reset lifecycle |
+| `lora/sx126x` | SX1261/1262/1268 driver: bring-up with TCXO proof, calibration with verdicts, CAD, receive, transmit with a hard power ceiling, AGC reset, sleep/wake/reset lifecycle |
 
 `cmd/lorabench` exercises a board end to end — identity, channel
 assessment, noise floor, listening — and never transmits.
@@ -88,9 +88,18 @@ full gate.
 
 ## Status
 
-Receive, channel assessment and the recovery lifecycle are implemented,
-tested against transcripts and validated on hardware; transmit is not
-yet.
+Receive, channel assessment, transmit and the recovery lifecycle are
+implemented and tested against transcripts; the receive side is
+validated on hardware, the transmit side awaits its bench pass.
+
+Transmitting is opt-in twice over: `Config.Chip` declares the exact
+part — the PA tables differ destructively between SX1261 and SX1262/68,
+and the chip's own version register cannot be trusted to tell them
+apart — and `Config.MaxTxPower` sets a hard chip-side ceiling that
+`Transmit` refuses to exceed rather than clamp. The PA operating points
+are the measured ones (radiolib-org/power-tests), the §15.1/§15.2/§15.4
+errata are applied, and the chip-side TX timeout scales with airtime so
+slow presets are never truncated mid-frame.
 
 ## License
 

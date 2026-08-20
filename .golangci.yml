@@ -81,7 +81,7 @@ linters:
       # Lookup tables (IRQ names, device-error names, TCXO voltages,
       # band calibration columns) are package-level by nature.
       - linters: [gochecknoglobals]
-        source: 'Names = |tcxoVoltages|agcCal'
+        source: 'Names = |tcxoVoltages|agcCal|paTable'
 
       # The ioctl layer is what the unsafe package exists for; every
       # conversion is pinned and commented.

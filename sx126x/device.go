@@ -137,7 +137,11 @@ func (d *device) wake() error {
 	return d.waitBusy()
 }
 
-// readRegister reads n bytes starting at addr.
+// readRegister reads n bytes starting at addr. The result is a copy:
+// unlike cmd's response it stays valid across later commands, because
+// register reads exist precisely to be held while other commands run —
+// a save-restore that returned a view into the reused transfer buffer
+// would restore whatever the next response overwrote it with.
 func (d *device) readRegister(addr uint16, n int) ([]byte, error) {
 	// opcode, addr MSB, addr LSB, one status byte, then the data.
 	args := make([]byte, 3+n)
@@ -146,7 +150,9 @@ func (d *device) readRegister(addr uint16, n int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return rx[4:], nil
+	out := make([]byte, n)
+	copy(out, rx[4:])
+	return out, nil
 }
 
 func (d *device) writeRegister(addr uint16, data ...byte) error {

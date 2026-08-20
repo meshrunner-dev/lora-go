@@ -151,6 +151,7 @@ func openScript() []xfer {
 		{"calibration verdict", []byte{0x17, 0x00, 0x00, 0x00}, []byte{stOK, stOK, 0x00, 0x00}},
 		{"regulator DC-DC", []byte{0x96, 0x01}, nil},
 		{"packet type LoRa", []byte{0x8A, 0x01}, nil},
+		{"fallback mode STDBY_RC", []byte{0x93, 0x20}, nil},
 		{"clear device errors", []byte{0x07, 0x00, 0x00}, nil},
 		{"standby XOSC (crystal proof)", []byte{0x80, 0x01}, nil},
 		{"crystal verdict", []byte{0x17, 0x00, 0x00, 0x00}, []byte{stOK, stOK, 0x00, 0x00}},
