@@ -19,7 +19,7 @@ The quickstart lives in [`example_linux_test.go`](example_linux_test.go)
 radio, err := sx126x.Open(spi, pins, sx126x.Config{TCXO: sx126x.TCXO1V8, UseDCDC: true})
 err = radio.Configure(lora.Params{ /* frequency, SF, BW, CR, preamble, sync word */ })
 
-busy, err := radio.AssessChannel(ctx, sx126x.CAD4Symbols) // listen before talk
+busy, err := radio.AssessChannel(ctx, sx126x.CAD{})       // listen before talk
 err = radio.StartReceive()
 frame, err := radio.Receive(ctx)          // blocking; Poll()/Events() for event loops
 ```
