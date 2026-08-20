@@ -16,9 +16,11 @@ linters:
     # Require a curated import allowlist; overkill for three dependencies.
     - depguard
     - gomodguard
+    - gomodguard_v2
     # Demand every struct literal list all fields; zero values are
     # idiomatic Go and kill readable tests.
     - exhaustruct
+    - exhaustruct_v5
     # `if err := f(); err != nil` is the language's own idiom.
     - noinlineerr
     # A register map is legitimately full of magic numbers; naming each

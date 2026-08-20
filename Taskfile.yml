@@ -1,44 +1,19 @@
 # Development tasks. `task check` is the gate: everything a commit must
-# pass, in the order that fails fastest.
+# pass, composed from the atomic tasks below in the order that fails
+# fastest. Tools run through `go run` at pinned versions, so the gate is
+# reproducible on any machine with a Go toolchain and nothing else.
 version: "3"
+
+vars:
+  GOLANGCI: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.0
+  GOVULNCHECK: go run golang.org/x/vuln/cmd/govulncheck@latest
 
 tasks:
   default:
     deps: [check]
 
-  test:
-    desc: Run the test suite (includes the SPI transcript harness)
-    cmds:
-      - go test ./...
-
-  test:race:
-    desc: Tests under the race detector — must stay clean even though a
-      Radio is single-owner by contract
-    cmds:
-      - go test -race ./...
-
-  lint:
-    desc: Strict lint baseline (see .golangci.yml for the exceptions)
-    cmds:
-      - golangci-lint run ./...
-
-  vuln:
-    desc: Scan dependencies for known vulnerabilities
-    cmds:
-      - govulncheck ./...
-
-  fmt:
-    desc: Verify formatting without rewriting anything
-    cmds:
-      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-
-  tidy:
-    desc: Verify go.mod/go.sum are minimal and complete
-    cmds:
-      - go mod tidy -diff
-
   check:
-    desc: The full gate — what CI runs, what a commit must pass
+    desc: "Full gate: formatting, tidy, lint, race tests, govulncheck"
     cmds:
       - task: fmt
       - task: tidy
@@ -46,7 +21,48 @@ tasks:
       - task: test:race
       - task: vuln
 
-  bench:build:
+  fmt:
+    desc: Verify formatting without rewriting anything
+    cmds:
+      - |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "gofmt — files need formatting:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+  tidy:
+    desc: Verify go.mod/go.sum are minimal and complete
+    cmds:
+      - go mod tidy -diff
+
+  lint:
+    desc: Run golangci-lint (strict baseline in .golangci.yml; wraps vet and staticcheck)
+    cmds:
+      - "{{.GOLANGCI}} run"
+
+  test:
+    desc: Run the test suite (includes the SPI transcript harness)
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Tests under the race detector — must stay clean even though a Radio is single-owner by contract
+    cmds:
+      - go test -race ./...
+
+  vuln:
+    desc: Scan dependencies for known vulnerabilities
+    cmds:
+      - "{{.GOVULNCHECK}} ./..."
+
+  build:
+    desc: Build the cmd/ tools into ./bin
+    cmds:
+      - go build -o bin/ ./cmd/...
+
+  build:arm64:
     desc: Cross-compile lorabench for a 64-bit ARM board
     cmds:
       - GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/lorabench-arm64 ./cmd/lorabench
