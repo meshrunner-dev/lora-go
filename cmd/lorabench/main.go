@@ -221,7 +221,7 @@ func (c *cli) run() error {
 		count++
 		fmt.Printf("[%s] %d o  RSSI %.1f dBm  SNR %.2f dB\n",
 			frame.At.Format("15:04:05.000"), len(frame.Payload), frame.RSSI, frame.SNR)
-		describe(frame.Payload)
+		fmt.Printf("        %x\n", frame.Payload)
 	}
 	fmt.Printf("\n%d trame(s) reçue(s)", count)
 	if c.AGC > 0 {
