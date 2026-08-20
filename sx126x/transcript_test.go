@@ -17,17 +17,37 @@ func TestOpenTranscript(t *testing.T) {
 	}
 }
 
-// A bus with nothing on it must fail on the very first command, not
-// succeed its way into a Radio that will never hear anything.
-func TestOpenNoDevice(t *testing.T) {
-	c := &chip{t: t, steps: []xfer{
-		{"post-reset flush, dead bus", []byte{0x80, 0x00}, []byte{0x00, 0x00}},
-	}}
+// A marginal power-up is retried: the chip answering nothing on the
+// first attempts and normally on the third yields a working Radio, one
+// reset per attempt.
+func TestOpenRetriesColdStart(t *testing.T) {
+	deadFlush := xfer{"flush, chip not up yet", []byte{0x80, 0x00}, []byte{0x00, 0x00}}
+	steps := make([]xfer, 0, 2+len(openScript()))
+	steps = append(steps, deadFlush, deadFlush)
+	steps = append(steps, openScript()...)
+	c := &chip{t: t, steps: steps}
 	pins := lora.Pins{Reset: &fakePin{c}, Busy: &fakeBusy{c}, DIO1: &fakeDIO1{c: c, edges: make(chan struct{}, 1)}}
-	_, err := Open(&fakeSPI{c}, pins, Config{})
+	r, err := Open(&fakeSPI{c}, pins, Config{TCXO: TCXO1V8, UseDCDC: true})
+	if err != nil {
+		t.Fatalf("Open should have survived two silent attempts: %v", err)
+	}
+	c.done()
+	if r.Version() != "SX1262" {
+		t.Errorf("Version = %q", r.Version())
+	}
+}
+
+// Three silent attempts exhaust the retry budget: a genuinely dead bus
+// still fails, and with the right error.
+func TestOpenRetryBudgetExhausted(t *testing.T) {
+	deadFlush := xfer{"flush, dead bus", []byte{0x80, 0x00}, []byte{0x00, 0x00}}
+	c := &chip{t: t, steps: []xfer{deadFlush, deadFlush, deadFlush}}
+	pins := lora.Pins{Reset: &fakePin{c}, Busy: &fakeBusy{c}, DIO1: &fakeDIO1{c: c, edges: make(chan struct{}, 1)}}
+	_, err := Open(&fakeSPI{c}, pins, Config{TCXO: TCXO1V8, UseDCDC: true})
 	if !errors.Is(err, ErrNoDevice) {
 		t.Fatalf("err = %v, want ErrNoDevice", err)
 	}
+	c.done()
 }
 
 // A TCXO misconfiguration must fail Open with the crystal verdict, not

@@ -142,8 +142,23 @@ func Open(spi lora.SPI, pins lora.Pins, cfg Config) (*Radio, error) {
 	}
 	r := &Radio{dev: newDevice(spi, pins), cfg: cfg, now: time.Now}
 
+	// First contact tolerates a marginal power-up: a chip still
+	// stabilising can miss the first exchange, and a reset-and-retry
+	// turns a capricious cold start into a reliable one (the reference
+	// driver retries up to ten times for the same reason). Only the
+	// nobody-home pattern is retried — a real failure, a TCXO verdict,
+	// a calibration error all carry information and surface at once.
+	const openAttempts = 3
 	if err := r.initChip(); err != nil {
-		return nil, err
+		for attempt := 1; ; attempt++ {
+			if !errors.Is(err, ErrNoDevice) || attempt >= openAttempts {
+				return nil, err
+			}
+			time.Sleep(10 * time.Millisecond)
+			if err = r.initChip(); err == nil {
+				break
+			}
+		}
 	}
 
 	// Read the version area — as a liveness probe, not an identity
