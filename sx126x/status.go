@@ -34,7 +34,7 @@ func (m ChipMode) String() string {
 }
 
 // CommandStatus is the outcome of the last command, as reported by
-// GetStatus.
+// GetStatus and by the status byte every command clocks back.
 type CommandStatus uint8
 
 // Command statuses (datasheet table 13-77).
@@ -62,39 +62,4 @@ func (c CommandStatus) String() string {
 	default:
 		return fmt.Sprintf("CommandStatus(%d)", uint8(c))
 	}
-}
-
-// deviceErrorNames maps the GetDeviceErrors bits to readable causes.
-var deviceErrorNames = []struct {
-	bit  uint16
-	name string
-}{
-	{errRC64KCalib, "RC64K calibration"},
-	{errRC13MCalib, "RC13M calibration"},
-	{errPLLCalib, "PLL calibration"},
-	{errADCCalib, "ADC calibration"},
-	{errIMGCalib, "image calibration"},
-	{errXOSCStart, "crystal start"},
-	{errPLLLock, "PLL lock"},
-	{errPARamp, "PA ramp"},
-}
-
-// describeDeviceErrors renders the latched error bits in words.
-func describeDeviceErrors(errs uint16) string {
-	if errs == 0 {
-		return "none"
-	}
-	out := ""
-	for _, e := range deviceErrorNames {
-		if errs&e.bit != 0 {
-			if out != "" {
-				out += ", "
-			}
-			out += e.name
-		}
-	}
-	if out == "" {
-		return fmt.Sprintf("unknown (0x%04X)", errs)
-	}
-	return out
 }

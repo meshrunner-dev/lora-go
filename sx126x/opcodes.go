@@ -36,14 +36,28 @@ const (
 	opWriteBuffer          = 0x0E
 	opReadBuffer           = 0x1E
 
+	regVersionString   = 0x0320 // 16 ASCII bytes identifying the part
 	regLoRaSyncWordMSB = 0x0740
-	regRxGain          = 0x08AC
+
+	// regIQPolarity carries the errata §15.4 workaround: bit 2 must be
+	// cleared when inverted IQ is selected and set when it is not, or
+	// inverted-IQ reception is quietly degraded.
+	regIQPolarity = 0x0736
+
+	regRxGain    = 0x08AC
+	regOCPConfig = 0x08E7
 
 	// regRXPatch is undocumented: setting bit 0 is reported to improve
 	// reception, and no Semtech document says why. See
 	// Config.UndocumentedRXPatch.
-	regRXPatch   = 0x08B5
-	regOCPConfig = 0x08E7
+	regRXPatch = 0x08B5
+
+	// The retention list (datasheet §9.6): registers named here survive
+	// a warm sleep. Three slots; the first is pointed at the RX gain so
+	// boosted gain is not silently lost across Sleep.
+	regRetention0 = 0x029F
+	regRetention1 = 0x02A0
+	regRetention2 = 0x02A1
 )
 
 // Standby oscillator selection for SetStandby.
@@ -55,29 +69,4 @@ const (
 // Packet type for SetPacketType.
 const packetTypeLoRa = 0x01
 
-// IRQ flags (datasheet table 13-29), as a bit field.
-const (
-	irqTxDone         = 1 << 0
-	irqRxDone         = 1 << 1
-	irqPreambleDetect = 1 << 2
-	irqSyncWordValid  = 1 << 3
-	irqHeaderValid    = 1 << 4
-	irqHeaderErr      = 1 << 5
-	irqCRCErr         = 1 << 6
-	irqCadDone        = 1 << 7
-	irqCadDetected    = 1 << 8
-	irqTimeout        = 1 << 9
-	irqAll            = 0x03FF
-)
-
-// Device-error bits (GetDeviceErrors).
-const (
-	errRC64KCalib = 1 << 0
-	errRC13MCalib = 1 << 1
-	errPLLCalib   = 1 << 2
-	errADCCalib   = 1 << 3
-	errIMGCalib   = 1 << 4
-	errXOSCStart  = 1 << 5
-	errPLLLock    = 1 << 6
-	errPARamp     = 1 << 8
-)
+const xtalHz = 32_000_000

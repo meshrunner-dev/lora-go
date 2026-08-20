@@ -1,3 +1,5 @@
+//go:build linux
+
 package linux
 
 import (
@@ -8,15 +10,21 @@ import (
 	"meshrunner.dev/pkg/lora"
 )
 
-// gpioOut / gpioIn / gpioIRQ wrap a single requested line each. One line
-// per request keeps ownership and cleanup obvious, which matters more
-// here than the small cost of extra file descriptors.
+// Each pin type wraps a single requested line. One line per request
+// keeps ownership and cleanup obvious, which matters more here than the
+// small cost of extra file descriptors.
 
-type gpioOut struct{ l *gpiocdev.Line }
+// OutLine is an output line, requested through Output.
+type OutLine struct {
+	l      *gpiocdev.Line
+	offset int
+}
+
+var _ lora.OutputPin = (*OutLine)(nil)
 
 // Output requests an output line on chip (e.g. "gpiochip0"), driven to
 // the given initial level.
-func Output(chip string, offset int, high bool) (lora.OutputPin, error) {
+func Output(chip string, offset int, high bool) (*OutLine, error) {
 	init := 0
 	if high {
 		init = 1
@@ -25,46 +33,69 @@ func Output(chip string, offset int, high bool) (lora.OutputPin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lora/linux: output %s:%d: %w", chip, offset, err)
 	}
-	return &gpioOut{l}, nil
+	return &OutLine{l: l, offset: offset}, nil
 }
 
-func (g *gpioOut) Set(high bool) error {
+// Set drives the line.
+func (g *OutLine) Set(high bool) error {
 	v := 0
 	if high {
 		v = 1
 	}
-	return g.l.SetValue(v)
+	if err := g.l.SetValue(v); err != nil {
+		return fmt.Errorf("lora/linux: set line %d: %w", g.offset, err)
+	}
+	return nil
 }
-func (g *gpioOut) Close() error { return g.l.Close() }
 
-type gpioIn struct{ l *gpiocdev.Line }
+// Close releases the line.
+func (g *OutLine) Close() error { return g.l.Close() }
+
+// InLine is a plain input line, requested through Input.
+type InLine struct {
+	l      *gpiocdev.Line
+	offset int
+}
+
+var _ lora.InputPin = (*InLine)(nil)
 
 // Input requests a plain input line.
-func Input(chip string, offset int) (lora.InputPin, error) {
+func Input(chip string, offset int) (*InLine, error) {
 	l, err := gpiocdev.RequestLine(chip, offset, gpiocdev.AsInput, gpiocdev.WithConsumer("lora"))
 	if err != nil {
 		return nil, fmt.Errorf("lora/linux: input %s:%d: %w", chip, offset, err)
 	}
-	return &gpioIn{l}, nil
+	return &InLine{l: l, offset: offset}, nil
 }
 
-func (g *gpioIn) Get() (bool, error) {
+// Get reads the line.
+func (g *InLine) Get() (bool, error) {
 	v, err := g.l.Value()
-	return v == 1, err
+	if err != nil {
+		return false, fmt.Errorf("lora/linux: read line %d: %w", g.offset, err)
+	}
+	return v == 1, nil
 }
-func (g *gpioIn) Close() error { return g.l.Close() }
 
-type gpioIRQ struct {
-	l     *gpiocdev.Line
-	edges chan struct{}
+// Close releases the line.
+func (g *InLine) Close() error { return g.l.Close() }
+
+// EdgeLine is an input line watching rising edges, requested through
+// Interrupt.
+type EdgeLine struct {
+	l      *gpiocdev.Line
+	offset int
+	edges  chan struct{}
 }
+
+var _ lora.InterruptPin = (*EdgeLine)(nil)
 
 // Interrupt requests an input watching rising edges. The edge callback
 // does nothing but a non-blocking send — the "handler is one signal"
 // rule — so it never touches SPI and never blocks the kernel's event
 // delivery.
-func Interrupt(chip string, offset int) (lora.InterruptPin, error) {
-	g := &gpioIRQ{edges: make(chan struct{}, 1)}
+func Interrupt(chip string, offset int) (*EdgeLine, error) {
+	g := &EdgeLine{offset: offset, edges: make(chan struct{}, 1)}
 	l, err := gpiocdev.RequestLine(chip, offset,
 		gpiocdev.WithRisingEdge,
 		gpiocdev.WithConsumer("lora"),
@@ -81,9 +112,17 @@ func Interrupt(chip string, offset int) (lora.InterruptPin, error) {
 	return g, nil
 }
 
-func (g *gpioIRQ) Get() (bool, error) {
+// Get reads the line's current level.
+func (g *EdgeLine) Get() (bool, error) {
 	v, err := g.l.Value()
-	return v == 1, err
+	if err != nil {
+		return false, fmt.Errorf("lora/linux: read line %d: %w", g.offset, err)
+	}
+	return v == 1, nil
 }
-func (g *gpioIRQ) Edges() <-chan struct{} { return g.edges }
-func (g *gpioIRQ) Close() error           { return g.l.Close() }
+
+// Edges returns the edge-hint channel.
+func (g *EdgeLine) Edges() <-chan struct{} { return g.edges }
+
+// Close releases the line, waiting out any in-flight event handler.
+func (g *EdgeLine) Close() error { return g.l.Close() }

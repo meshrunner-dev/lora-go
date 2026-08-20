@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package linux implements the lora transports on Linux: SPI through
 // spidev and GPIO through the gpiochip character device.
 //

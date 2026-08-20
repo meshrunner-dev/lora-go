@@ -1,6 +1,7 @@
-// Package lora describes the LoRa physical layer: modulation parameters,
-// airtime, channel assessment, and the interfaces a transceiver driver
-// implements.
+// Package lora describes the LoRa physical layer: modulation
+// parameters, airtime, and the interfaces a transceiver driver
+// implements. Operations against a live chip — receiving, channel
+// assessment — live in the driver subpackages.
 //
 // It is deliberately protocol-agnostic — frames are opaque bytes — so a
 // repeater, a sniffer and a bench tool can share one radio stack. Chip

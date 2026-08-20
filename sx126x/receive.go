@@ -8,34 +8,295 @@ import (
 	"meshrunner.dev/pkg/lora"
 )
 
+// rxMask is the full set of flags reception cares about. All of it is
+// latched (the progress markers feed ReceiveInProgress), but only the
+// terminal RxDone is routed to DIO1: the line must fire on "a frame is
+// ready", not stand tall from the first preamble symbol — a level that
+// rises early and stays up yields no edge for the event that matters.
+const rxMask = irqOutcome | irqProgress
+
+// pollFloor bounds how stale a lost DIO1 edge can leave us: the receive
+// loop re-reads the chip's flags at least this often.
+const pollFloor = 20 * time.Millisecond
+
 // RxFrame is a received frame and what the radio measured about it.
 type RxFrame struct {
 	Payload []byte
-	RSSI    float64   // dBm
-	SNR     float64   // dB
-	At      time.Time // when the driver observed RxDone
+	RSSI    float64       // dBm
+	SNR     float64       // dB
+	At      time.Time     // when the driver observed RxDone
+	Airtime time.Duration // computed channel occupancy of this frame
+}
+
+// StartReceive arms continuous reception and leaves the radio there.
+// Staying in RX is the default posture: a radio that is not
+// transmitting should be listening.
+//
+// Arming resets reception state: leftover flags are cleared (narrowly —
+// only the receive set, never a blanket sweep) and the IRQ routing is
+// rewritten. StartReceive is the sole owner of that routing; nothing
+// else may rewrite it without restoring it before returning.
+func (r *Radio) StartReceive() error {
+	if !r.ready {
+		return ErrNotConfigured
+	}
+	if err := r.dev.clearIRQ(rxMask); err != nil {
+		return err
+	}
+	if _, err := r.dev.cmd(opSetDioIrqParams,
+		byte(rxMask>>8), byte(rxMask&0xFF), // latch everything reception reads
+		byte(IRQRxDone>>8), byte(IRQRxDone), // but only completion edges DIO1
+		0, 0, 0, 0); err != nil {
+		return err
+	}
+	if err := r.setRF(lora.RFReceive); err != nil {
+		return err
+	}
+	r.progAnchor = time.Time{}
+	r.progHeader = false
+	// 0xFFFFFF selects continuous reception rather than a timeout.
+	_, err := r.dev.cmd(opSetRx, 0xFF, 0xFF, 0xFF)
+	return err
+}
+
+// Poll collects a finished reception if one is latched, without
+// blocking: (nil, nil) means nothing has happened yet. This is the
+// primitive an owner with several clocks builds its loop on; Receive
+// wraps it for callers with only one thing to wait for.
+//
+// A frame failing its CRC surfaces as ErrCRC, a hopeless header as
+// ErrHeader — both are expected traffic on a busy band, distinguishable
+// with errors.Is, and worth counting: received-to-corrupt is the
+// standard site-health ratio.
+func (r *Radio) Poll() (*RxFrame, error) {
+	if !r.ready {
+		return nil, ErrNotConfigured
+	}
+	flags, err := r.dev.irqStatus()
+	if err != nil {
+		return nil, err
+	}
+	return r.collect(flags)
+}
+
+// collect interprets and consumes the outcome flags in the given word.
+func (r *Radio) collect(flags IRQ) (*RxFrame, error) {
+	switch {
+	case flags&IRQCRCErr != 0:
+		// Even with RxDone alongside: the payload is known-corrupt.
+		return nil, r.finish(flags&rxMask, ErrCRC)
+
+	case flags&IRQHeaderErr != 0 && flags&IRQHeaderValid == 0:
+		// A HeaderErr next to a valid header is a leftover from an
+		// earlier packet, not a verdict on this one (the reference
+		// drivers guard this alias the same way) — that case falls
+		// through to RxDone below or to "still arriving".
+		return nil, r.finish(flags&(IRQHeaderErr|irqProgress), ErrHeader)
+
+	case flags&IRQRxDone != 0:
+		at := r.now()
+		// Read everything about the frame BEFORE clearing: the buffer
+		// status describes the last packet received, and clearing first
+		// opens a window where a new arrival is misattributed.
+		rx, err := r.dev.cmd(opGetRxBufferStatus, 0x00, 0x00, 0x00)
+		if err != nil {
+			return nil, err
+		}
+		length, offset := rx[2], rx[3]
+		payload, err := r.readBuffer(offset, int(length))
+		if err != nil {
+			return nil, err
+		}
+		rssi, snr, err := r.packetStatus()
+		if err != nil {
+			return nil, err
+		}
+		if err := r.finish(flags&rxMask, nil); err != nil {
+			return nil, err
+		}
+		return &RxFrame{
+			Payload: payload,
+			RSSI:    rssi,
+			SNR:     snr,
+			At:      at,
+			Airtime: r.params.Airtime(len(payload)),
+		}, nil
+
+	case flags&IRQTimeout != 0:
+		return nil, r.finish(flags&rxMask, ErrTimeout)
+
+	case flags&IRQHeaderErr != 0:
+		// Stale HeaderErr under a frame still arriving: shed the stale
+		// bit alone and keep waiting for this frame's own outcome.
+		if err := r.dev.clearIRQ(IRQHeaderErr); err != nil {
+			return nil, err
+		}
+		return nil, nil
+
+	default:
+		return nil, nil
+	}
+}
+
+// finish clears exactly the flags a collected outcome consumed and
+// resets the progress clock, then returns outcome unchanged.
+func (r *Radio) finish(flags IRQ, outcome error) error {
+	if err := r.dev.clearIRQ(flags); err != nil {
+		return err
+	}
+	r.progAnchor = time.Time{}
+	r.progHeader = false
+	return outcome
+}
+
+// Events exposes the DIO1 edge hint, for owners that select across
+// several clocks: an edge says "call Poll", nothing more. It can be
+// lossy — pair it with a periodic Poll so a lost edge costs latency,
+// never an event.
+func (r *Radio) Events() <-chan struct{} { return r.dev.pins.DIO1.Edges() }
+
+// Receive waits for the next frame: Poll wrapped in edge-or-timer
+// waiting, for callers with nothing else to schedule. The radio must be
+// receiving (see StartReceive) and stays so afterwards, so frames can
+// be read back to back.
+func (r *Radio) Receive(ctx context.Context) (*RxFrame, error) {
+	if !r.ready {
+		return nil, ErrNotConfigured
+	}
+	// A quiet channel and a disarmed radio produce the same silence;
+	// tell them apart up front rather than let the caller time out on a
+	// chip that was never listening.
+	mode, _, err := r.dev.status()
+	if err != nil {
+		return nil, err
+	}
+	if mode != ModeRx {
+		// Latched outcomes are still collectable even out of RX.
+		if frame, err := r.Poll(); frame != nil || err != nil {
+			return frame, err
+		}
+		return nil, fmt.Errorf("%w: mode is %s", ErrNotReceiving, mode)
+	}
+	edges := r.Events()
+	for {
+		frame, err := r.Poll()
+		if frame != nil || err != nil {
+			return frame, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-edges:
+		case <-time.After(pollFloor):
+		}
+	}
+}
+
+// ReceiveInProgress reports whether a frame is arriving: preamble means
+// something tripped the detector, header means a frame is committed and
+// worth protecting.
+//
+// The chip latches these markers but never ages them, so noise that
+// trips the detector with no frame behind it would otherwise read as
+// "busy" forever — and wedge every guarded operation, ResetAGC first.
+// Stale state is therefore expired against the channel's own timing
+// (preamble duration, then maximum frame airtime once a header is
+// seen) and cleared, which also lets the DIO1 line fall.
+func (r *Radio) ReceiveInProgress() (preamble, header bool, err error) {
+	flags, err := r.dev.irqStatus()
+	if err != nil {
+		return false, false, err
+	}
+	return r.receiveProgress(flags)
+}
+
+// receiveProgress is ReceiveInProgress on an already-read flag word.
+func (r *Radio) receiveProgress(flags IRQ) (preamble, header bool, err error) {
+	prog := flags & irqProgress
+	if prog == 0 {
+		r.progAnchor = time.Time{}
+		r.progHeader = false
+		return false, false, nil
+	}
+	now := r.now()
+	header = flags&IRQHeaderValid != 0
+	if r.progAnchor.IsZero() || (header && !r.progHeader) {
+		// First sighting, or the frame just committed to a header:
+		// (re)anchor the clock for the next stage.
+		r.progAnchor = now
+		r.progHeader = header
+	}
+	window := r.params.PreambleDuration() + 12*r.params.SymbolDuration()
+	if r.progHeader {
+		window = r.params.MaxFrameDuration(255)
+	}
+	if now.Sub(r.progAnchor) > window {
+		// No frame can still legitimately be in the air: the detector
+		// was tripped by noise. Shed exactly the stale markers.
+		if err := r.dev.clearIRQ(prog); err != nil {
+			return false, false, err
+		}
+		r.progAnchor = time.Time{}
+		r.progHeader = false
+		return false, false, nil
+	}
+	return flags&(IRQPreambleDetected|IRQSyncWordValid) != 0, header, nil
 }
 
 // AssessChannel performs a channel activity detection: a short listen
-// that answers "is a LoRa transmission under way right now?".
+// answering "is a LoRa transmission under way right now?". It reports
+// true when the channel is busy. Far cheaper than a full reception —
+// tens of milliseconds — which is what makes listen-before-talk
+// affordable.
 //
-// It is far cheaper than a full reception — tens of milliseconds — which
-// is what makes listen-before-talk affordable. It reports true when the
-// channel is busy.
-func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (bool, error) {
+// CAD borrows the radio: the chip leaves RX for the scan and the IRQ
+// routing is temporarily CAD's. Both are restored before returning, on
+// every path — if the radio was receiving it is receiving again
+// afterwards, re-armed by StartReceive; otherwise it ends in standby.
+// While a frame is arriving (ErrReceiveInProgress) or unread
+// (ErrUnreadFrame) the scan refuses instead of destroying it: the scan
+// that kills the reception it was protecting is the classic
+// listen-before-talk self-sabotage.
+func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (busy bool, err error) {
 	if !r.ready {
 		return false, ErrNotConfigured
+	}
+	if err := r.guardDestructive(); err != nil {
+		return false, err
+	}
+	mode, _, err := r.dev.status()
+	if err != nil {
+		return false, err
+	}
+	wasRX := mode == ModeRx
+
+	// Whatever happens below, hand the radio back the way we found it.
+	defer func() {
+		if wasRX {
+			if rerr := r.StartReceive(); rerr != nil && err == nil {
+				err = rerr
+			}
+		}
+	}()
+
+	if _, err := r.dev.cmd(opSetStandby, standbyRC); err != nil {
+		return false, err
 	}
 	peak, min := cadDetection(r.params.SF)
 	if _, err := r.dev.cmd(opSetCadParams,
 		byte(symbols), peak, min, 0x00 /* exit to standby */, 0x00, 0x00, 0x00); err != nil {
 		return false, err
 	}
-	if err := r.dev.clearIRQ(irqAll); err != nil {
+	const cadFlags = IRQCadDone | IRQCadDetected
+	if err := r.dev.clearIRQ(cadFlags); err != nil {
 		return false, err
 	}
 	if _, err := r.dev.cmd(opSetDioIrqParams,
-		0x01, 0x80, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00); err != nil { // CadDone|CadDetected on DIO1
+		byte(cadFlags>>8), byte(cadFlags&0xFF), byte(cadFlags>>8), byte(cadFlags&0xFF),
+		0x00, 0x00, 0x00, 0x00); err != nil {
+		return false, err
+	}
+	if err := r.setRF(lora.RFReceive); err != nil {
 		return false, err
 	}
 	if _, err := r.dev.cmd(opSetCad); err != nil {
@@ -48,104 +309,42 @@ func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (bool, er
 	cadCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	flags, err := r.waitIRQ(cadCtx, irqCadDone, 2*time.Millisecond)
+	flags, err := r.waitIRQ(cadCtx, IRQCadDone, 2*time.Millisecond)
 	if err != nil {
 		return false, fmt.Errorf("sx126x: CAD: %w", err)
 	}
-	if err := r.dev.clearIRQ(flags); err != nil {
+	if err := r.dev.clearIRQ(flags & cadFlags); err != nil {
 		return false, err
 	}
-	return flags&irqCadDetected != 0, nil
+	return flags&IRQCadDetected != 0, nil
 }
 
-// StartReceive puts the radio into continuous reception and leaves it
-// there. Staying in RX is the default posture: a radio that is not
-// transmitting should be listening, including while it waits for a free
-// channel.
-func (r *Radio) StartReceive() error {
+// RSSI reads the instantaneous signal strength on the channel. It is
+// only meaningful while the radio is receiving — and, for a noise-floor
+// reading, only when no frame is arriving; sample around
+// ReceiveInProgress if that distinction matters.
+func (r *Radio) RSSI() (float64, error) {
 	if !r.ready {
-		return ErrNotConfigured
+		return 0, ErrNotConfigured
 	}
-	if err := r.dev.clearIRQ(irqAll); err != nil {
-		return err
-	}
-	// Ask for the progress markers too. Whoever arms reception owns the
-	// whole mask: a later writer that omits them makes any
-	// reception-in-progress check silently blind.
-	mask := uint16(irqRxDone | irqTimeout | irqCRCErr | irqHeaderErr |
-		irqPreambleDetect | irqHeaderValid)
-	if _, err := r.dev.cmd(opSetDioIrqParams,
-		byte(mask>>8), byte(mask), byte(mask>>8), byte(mask), 0, 0, 0, 0); err != nil {
-		return err
-	}
-	if err := r.setAntenna(false); err != nil {
-		return err
-	}
-	// 0xFFFFFF selects continuous reception rather than a timeout.
-	_, err := r.dev.cmd(opSetRx, 0xFF, 0xFF, 0xFF)
-	return err
-}
-
-// Receive waits for the next frame. The radio must already be in
-// reception (see StartReceive); it stays there afterwards, so frames can
-// be read back to back.
-//
-// A frame failing its CRC is reported as an error rather than returned:
-// the bytes are known-corrupt, and the flags are cleared either way so
-// reception continues.
-func (r *Radio) Receive(ctx context.Context) (*RxFrame, error) {
-	if !r.ready {
-		return nil, ErrNotConfigured
-	}
-	flags, err := r.waitIRQ(ctx, irqRxDone|irqTimeout|irqCRCErr|irqHeaderErr, 20*time.Millisecond)
+	mode, _, err := r.dev.status()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	at := time.Now()
-	if err := r.dev.clearIRQ(flags); err != nil {
-		return nil, err
+	if mode != ModeRx {
+		return 0, fmt.Errorf("%w: mode is %s", ErrNotReceiving, mode)
 	}
-	switch {
-	case flags&irqCRCErr != 0:
-		return nil, fmt.Errorf("sx126x: %w", errCRC)
-	case flags&irqHeaderErr != 0:
-		return nil, fmt.Errorf("sx126x: %w", errHeader)
-	case flags&irqTimeout != 0:
-		return nil, ErrTimeout
-	}
-
-	rx, err := r.dev.cmd(opGetRxBufferStatus, 0x00, 0x00, 0x00)
+	rx, err := r.dev.cmd(opGetRssiInst, 0x00, 0x00)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	length, offset := rx[2], rx[3]
-	payload, err := r.readBuffer(offset, int(length))
-	if err != nil {
-		return nil, err
-	}
-	rssi, snr, err := r.packetStatus()
-	if err != nil {
-		return nil, err
-	}
-	return &RxFrame{Payload: payload, RSSI: rssi, SNR: snr, At: at}, nil
-}
-
-// ReceiveInProgress reports whether the radio is currently demodulating,
-// by reading the chip's live flags rather than any software memory of
-// them. Preamble seen means something is arriving; header seen means a
-// frame is committed and worth protecting.
-func (r *Radio) ReceiveInProgress() (preamble, header bool, err error) {
-	flags, err := r.dev.irqStatus()
-	if err != nil {
-		return false, false, err
-	}
-	return flags&irqPreambleDetect != 0, flags&irqHeaderValid != 0, nil
+	return -float64(rx[2]) / 2, nil
 }
 
 func (r *Radio) readBuffer(offset byte, n int) ([]byte, error) {
-	tx := make([]byte, 3+n)
-	tx[0], tx[1] = opReadBuffer, offset
-	rx, err := r.dev.cmd(tx[0], tx[1:]...)
+	args := make([]byte, 2+n)
+	args[0] = offset
+	rx, err := r.dev.cmd(opReadBuffer, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -162,15 +361,6 @@ func (r *Radio) packetStatus() (rssi, snr float64, err error) {
 		return 0, 0, err
 	}
 	return -float64(rx[2]) / 2, float64(int8(rx[3])) / 4, nil
-}
-
-// setAntenna steers an external RF switch, when the board routes it to
-// the host instead of letting the chip drive it from DIO2.
-func (r *Radio) setAntenna(transmit bool) error {
-	if r.dev.pins.AntennaSwitch == nil {
-		return nil
-	}
-	return r.dev.pins.AntennaSwitch.Set(transmit)
 }
 
 // CADSymbols is how many symbols a channel assessment listens for. More
@@ -202,8 +392,9 @@ func symbolCount(s CADSymbols) int {
 }
 
 // cadDetection returns the peak and minimum detection thresholds
-// Semtech recommends for a spreading factor (application note AN1200.48).
-func cadDetection(sf lora.SpreadingFactor) (peak, min byte) {
+// Semtech recommends for a spreading factor (application note
+// AN1200.48).
+func cadDetection(sf lora.SpreadingFactor) (peak, minimum byte) {
 	switch sf {
 	case lora.SF5:
 		return 18, 10
@@ -222,15 +413,4 @@ func cadDetection(sf lora.SpreadingFactor) (peak, min byte) {
 	default:
 		return 25, 10
 	}
-}
-
-// RSSI reads the instantaneous signal strength on the channel. Taken
-// while receiving, it measures the noise floor — the number that tells a
-// deaf radio (no antenna, silent front end) from a quiet channel.
-func (r *Radio) RSSI() (float64, error) {
-	rx, err := r.dev.cmd(opGetRssiInst, 0x00, 0x00)
-	if err != nil {
-		return 0, err
-	}
-	return -float64(rx[2]) / 2, nil
 }
