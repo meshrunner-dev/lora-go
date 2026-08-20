@@ -201,9 +201,6 @@ func (r *Radio) initChip() error {
 	if _, err := r.dev.cmd(opSetPacketType, packetTypeLoRa); err != nil {
 		return err
 	}
-	if err := r.applyRXTuning(); err != nil {
-		return err
-	}
 
 	// Prove the crystal runs: force it on and read the verdict. BUSY
 	// covers the oscillator start, so no fixed delay is needed. Without
@@ -278,6 +275,10 @@ func (r *Radio) Configure(p lora.Params) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
+	if p.Frequency < 150_000_000 || p.Frequency > 960_000_000 {
+		return fmt.Errorf("%w: %d Hz is outside the SX126x synthesiser range (150-960 MHz)",
+			ErrBadConfig, p.Frequency)
+	}
 	if r.ready {
 		if err := r.guardDestructive(); err != nil {
 			return err
@@ -323,6 +324,9 @@ func (r *Radio) applyChannel(p lora.Params) error {
 	if err := r.dev.checkDeviceErrors("channel calibration"); err != nil {
 		return err
 	}
+	if err := r.applyAGCBandCal(p.Frequency); err != nil {
+		return err
+	}
 
 	ldro := byte(0)
 	if p.LowDataRateOptimize() {
@@ -346,7 +350,80 @@ func (r *Radio) applyChannel(p lora.Params) error {
 
 	// Any calibration can clear the receiver tuning, and an image
 	// calibration ran above, so re-apply rather than assume.
-	return r.applyRXTuning()
+	return r.applyRXTuning(p.Frequency)
+}
+
+// agcBandCal is one column of DS §6.1.6 Table 6-4: the RSSI/AGC
+// calibration for a frequency band.
+type agcBandCal struct {
+	rssiMeasCalH byte // regAgcRssiMeasCalH, bits 4:0
+	rssiMeasCalL byte
+	gforstPowThr byte
+	sensiAdjust  byte // regRxGain bits 7:2
+	gainTune     [7]byte
+}
+
+// The chip ships calibrated for 868-915 MHz, which is why the high-band
+// gain tunes are zero: writing them is a no-op on fresh silicon and
+// exists so a runtime band change restores them after the low-band set
+// was installed.
+var agcCalHigh = agcBandCal{
+	rssiMeasCalH: 0x01, rssiMeasCalL: 0x53, gforstPowThr: 0x0A,
+	sensiAdjust: 0x25,
+}
+
+// The low-band column is the datasheet's 470-490 MHz calibration —
+// Semtech publishes no 433 MHz column. Below 600 MHz it is the nearest
+// published data and beats leaving the 868-915 tuning installed, but a
+// true 433 MHz figure would need the DS §6.1.6 generator sweep on real
+// hardware; do not read these numbers as characterised for 433.
+var agcCalLow = agcBandCal{
+	rssiMeasCalH: 0x01, rssiMeasCalL: 0x27, gforstPowThr: 0x04,
+	sensiAdjust: 0x22,
+	gainTune:    [7]byte{0xDE, 0xE2, 0x32, 0x44, 0x33, 0x34, 0x04},
+}
+
+// agcCalFor picks the calibration column. The datasheet characterises
+// only 470-490 and 868-915; 600 MHz splits the 433/470 group from the
+// 779/868/915 group cleanly.
+func agcCalFor(freq uint32) *agcBandCal {
+	if freq < 600_000_000 {
+		return &agcCalLow
+	}
+	return &agcCalHigh
+}
+
+// applyAGCBandCal installs the band's RSSI/AGC calibration — everything
+// except the shared 0x08AC byte, which rxGainByte folds into the gain
+// writes.
+func (r *Radio) applyAGCBandCal(freq uint32) error {
+	cal := agcCalFor(freq)
+	// Bits 4:0 only — preserve the rest of the register.
+	cur, err := r.dev.readRegister(regAgcRssiMeasCalH, 1)
+	if err != nil {
+		return err
+	}
+	if err := r.dev.writeRegister(regAgcRssiMeasCalH,
+		cur[0]&^0x1F|cal.rssiMeasCalH&0x1F); err != nil {
+		return err
+	}
+	if err := r.dev.writeRegister(regAgcRssiMeasCalL, cal.rssiMeasCalL); err != nil {
+		return err
+	}
+	if err := r.dev.writeRegister(regAgcGforstPowThr, cal.gforstPowThr); err != nil {
+		return err
+	}
+	return r.dev.writeRegister(regAgcGainTune, cal.gainTune[:]...)
+}
+
+// rxGainByte builds the shared 0x08AC byte: the band's AgcSensiAdjust
+// in bits 7:2, the gain mode in bits 1:0.
+func rxGainByte(freq uint32, boosted bool) byte {
+	b := agcCalFor(freq).sensiAdjust << 2
+	if boosted {
+		b |= 0x02
+	}
+	return b
 }
 
 // rxPayloadLen is the length programmed for reception: the agreed frame
@@ -360,25 +437,25 @@ func rxPayloadLen(p lora.Params) byte {
 }
 
 // applyRXTuning writes the receiver settings that are not part of the
-// channel: boosted gain and the undocumented patch. Both are silently
-// cleared by calibration, so this is called after every one.
-func (r *Radio) applyRXTuning() error {
-	if r.cfg.RXBoostedGain {
-		if err := r.dev.writeRegister(regRxGain, 0x96); err != nil {
-			return err
-		}
-		// Point the warm-sleep retention list at the gain register so
-		// the boost survives Sleep (datasheet 9.6); without this a
-		// wake-up silently costs ~1 dB of sensitivity.
-		if err := r.dev.writeRegister(regRetention0, 0x01); err != nil {
-			return err
-		}
-		if err := r.dev.writeRegister(regRetention1, byte(regRxGain>>8)); err != nil {
-			return err
-		}
-		if err := r.dev.writeRegister(regRetention2, byte(regRxGain&0xFF)); err != nil {
-			return err
-		}
+// modulation: the shared gain/AgcSensiAdjust byte and the undocumented
+// patch. Silently cleared by calibration, so this runs after every one
+// — and the gain byte is rewritten again after each SetRx, which
+// resets it (see StartReceive).
+func (r *Radio) applyRXTuning(freq uint32) error {
+	if err := r.dev.writeRegister(regRxGain, rxGainByte(freq, r.cfg.RXBoostedGain)); err != nil {
+		return err
+	}
+	// Point the warm-sleep retention list at the gain register so the
+	// byte survives chip-internal sleep transitions (datasheet 9.6);
+	// without this a wake-up silently costs sensitivity.
+	if err := r.dev.writeRegister(regRetention0, 0x01); err != nil {
+		return err
+	}
+	if err := r.dev.writeRegister(regRetention1, byte(regRxGain>>8)); err != nil {
+		return err
+	}
+	if err := r.dev.writeRegister(regRetention2, byte(regRxGain&0xFF)); err != nil {
+		return err
 	}
 	if r.cfg.UndocumentedRXPatch {
 		// Read-modify-write: only bit 0 is ours to touch, and whatever
@@ -637,20 +714,27 @@ func (r *Radio) setRF(m lora.RFMode) error {
 	return r.dev.pins.RF.Set(m)
 }
 
-// imageCalibrationBand returns the calibration window covering freq
-// (datasheet table 9-2).
+// imageCalibrationBand returns the calibration window covering freq:
+// the published pair when the frequency falls in one of the datasheet's
+// characterised bands (table 9-2), otherwise a window computed around
+// the frequency itself — the encoding is 4 MHz per step, and any
+// frequency the synthesiser accepts deserves a calibrated image, not
+// the nearest band's leftovers.
 func imageCalibrationBand(freq uint32) (lo, hi byte) {
 	switch {
-	case freq >= 902_000_000:
-		return 0xE1, 0xE9 // 902-928 MHz
-	case freq >= 863_000_000:
-		return 0xD7, 0xDB // 863-870 MHz
-	case freq >= 779_000_000:
-		return 0xC1, 0xC5 // 779-787 MHz
-	case freq >= 470_000_000:
-		return 0x75, 0x81 // 470-510 MHz
+	case freq >= 902_000_000 && freq <= 928_000_000:
+		return 0xE1, 0xE9
+	case freq >= 863_000_000 && freq <= 870_000_000:
+		return 0xD7, 0xDB
+	case freq >= 779_000_000 && freq <= 787_000_000:
+		return 0xC1, 0xC5
+	case freq >= 470_000_000 && freq <= 510_000_000:
+		return 0x75, 0x81
+	case freq >= 430_000_000 && freq <= 440_000_000:
+		return 0x6B, 0x6F
 	default:
-		return 0x6B, 0x6F // 430-440 MHz
+		mhz := freq / 1_000_000
+		return byte((mhz - 4) / 4), byte((mhz + 4) / 4)
 	}
 }
 

@@ -76,10 +76,10 @@ linters:
         linters:
           - forbidigo
 
-      # Lookup tables (IRQ names, device-error names, TCXO voltages)
-      # are package-level by nature.
+      # Lookup tables (IRQ names, device-error names, TCXO voltages,
+      # band calibration columns) are package-level by nature.
       - linters: [gochecknoglobals]
-        source: 'Names = |tcxoVoltages'
+        source: 'Names = |tcxoVoltages|agcCal'
 
       # The ioctl layer is what the unsafe package exists for; every
       # conversion is pinned and commented.

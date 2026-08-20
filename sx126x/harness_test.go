@@ -184,6 +184,15 @@ func configureScript() []xfer {
 		{"calibrate image 863-870", []byte{0x98, 0xD7, 0xDB}, nil},
 		{"frequency 869.618 MHz", []byte{0x86, 0x36, 0x59, 0xE3, 0x53}, nil},
 		{"channel calibration verdict", []byte{0x17, 0x00, 0x00, 0x00}, []byte{stOK, stOK, 0x00, 0x00}},
+		// The DS §6.1.6 band calibration, high-band column: the RMW on
+		// 0x089C must touch bits 4:0 only.
+		{"read RSSI meas cal H", []byte{0x1D, 0x08, 0x9C, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x21}},
+		{"RSSI meas cal H (bits 4:0)", []byte{0x0D, 0x08, 0x9C, 0x21}, nil},
+		{"RSSI meas cal L", []byte{0x0D, 0x08, 0x9D, 0x53}, nil},
+		{"GFO/RST power threshold", []byte{0x0D, 0x08, 0xB9, 0x0A}, nil},
+		{"AGC gain tune (high band: zeros)",
+			[]byte{0x0D, 0x08, 0xF5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, nil},
 		{"modulation SF8/62.5k/CR4-8", []byte{0x8B, 0x08, 0x03, 0x04, 0x00}, nil},
 		{"packet params pre=32 explicit CRC", []byte{0x8C, 0x00, 0x20, 0x00, 0xFF, 0x01, 0x00}, nil},
 		{"read IQ polarity (errata 15.4)", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
@@ -191,7 +200,24 @@ func configureScript() []xfer {
 		// 0x0D already has bit 2 set: standard IQ needs no write.
 		{"sync word 0x12 -> 14 24", []byte{0x0D, 0x07, 0x40, 0x14, 0x24}, nil},
 		{"buffer base addresses", []byte{0x8F, 0x00, 0x00}, nil},
+		// The shared gain byte carries the band's AgcSensiAdjust even
+		// unboosted: 0x25<<2 = 0x94 on the high band.
+		{"RX gain byte (high band, unboosted)", []byte{0x0D, 0x08, 0xAC, 0x94}, nil},
+		{"retention slot count", []byte{0x0D, 0x02, 0x9F, 0x01}, nil},
+		{"retention addr MSB", []byte{0x0D, 0x02, 0xA0, 0x08}, nil},
+		{"retention addr LSB", []byte{0x0D, 0x02, 0xA1, 0xAC}, nil},
 	}
+}
+
+// stepIndex finds a step by description; the scripts are data, and
+// tests that vary one step should name it, not count offsets.
+func stepIndex(steps []xfer, desc string) int {
+	for i, st := range steps {
+		if st.desc == desc {
+			return i
+		}
+	}
+	return -1
 }
 
 // startReceiveScript pins StartReceive: the wide latch mask with only
@@ -202,6 +228,9 @@ func startReceiveScript() []xfer {
 		{"clear RX flags (narrow)", []byte{0x02, 0x02, 0x7E}, nil},
 		{"IRQ mask wide, DIO1=RxDone", []byte{0x08, 0x02, 0x7E, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00}, nil},
 		{"RX continuous", []byte{0x82, 0xFF, 0xFF, 0xFF}, nil},
+		// SetRx resets the shared gain byte; the driver rewrites it
+		// after entering RX, every time.
+		{"RX gain byte rewritten after SetRx", []byte{0x0D, 0x08, 0xAC, 0x94}, nil},
 	}
 }
 

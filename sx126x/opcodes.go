@@ -45,14 +45,21 @@ const (
 	regIQPolarity = 0x0736
 
 	// regRxGain is shared: bits 1:0 select the gain mode, bits 7:2 are
-	// AgcSensiAdjust — the band-specific RSSI/AGC calibration of DS
-	// §6.1.6. The classic 0x94/0x96 byte values embed the 868-915 MHz
-	// calibration (0x96>>2 = 0x25); writing them verbatim on a
-	// sub-600 MHz channel would silently install the wrong band's AGC
-	// tuning. This driver currently targets the 868-915 band, where the
-	// verbatim write is exactly right.
-	regRxGain    = 0x08AC
-	regOCPConfig = 0x08E7
+	// AgcSensiAdjust — part of the band-specific RSSI/AGC calibration of
+	// DS §6.1.6. The byte is always built from the configured band (see
+	// rxGainByte); the classic 0x94/0x96 constants would hardwire the
+	// 868-915 MHz column into every channel.
+	regRxGain = 0x08AC
+
+	// The rest of the DS §6.1.6 (Table 6-4) RSSI/AGC calibration set.
+	// Semtech: an incorrect value here yields "an incorrect gain
+	// selection in LoRa and GFSK mode", i.e. missed detections — this
+	// is receive performance, not telemetry cosmetics.
+	regAgcRssiMeasCalH = 0x089C // bits 4:0 only
+	regAgcRssiMeasCalL = 0x089D
+	regAgcGforstPowThr = 0x08B9
+	regAgcGainTune     = 0x08F5 // 7 consecutive bytes, through 0x08FB
+	regOCPConfig       = 0x08E7
 
 	// regRXPatch is undocumented: setting bit 0 is reported to improve
 	// reception, and no Semtech document says why. See

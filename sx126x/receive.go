@@ -55,8 +55,15 @@ func (r *Radio) StartReceive() error {
 	r.progAnchor = time.Time{}
 	r.progHeader = false
 	// 0xFFFFFF selects continuous reception rather than a timeout.
-	_, err := r.dev.cmd(opSetRx, 0xFF, 0xFF, 0xFF)
-	return err
+	if _, err := r.dev.cmd(opSetRx, 0xFF, 0xFF, 0xFF); err != nil {
+		return err
+	}
+	// SetRx resets the shared gain byte to power-saving with the
+	// high-band AgcSensiAdjust; rewrite it now, after entering RX and
+	// before any preamble can plausibly arrive, so every reception —
+	// whatever the band, boosted or not — runs on the intended gain
+	// and calibration.
+	return r.dev.writeRegister(regRxGain, rxGainByte(r.params.Frequency, r.cfg.RXBoostedGain))
 }
 
 // Poll collects a finished reception if one is latched, without

@@ -83,21 +83,87 @@ func TestInvertIQErrata(t *testing.T) {
 	p := meshcoreEU()
 	p.InvertIQ = true
 	script := configureScript()
-	script[7] = xfer{"packet params inverted IQ",
+	pp := stepIndex(script, "packet params pre=32 explicit CRC")
+	iq := stepIndex(script, "read IQ polarity (errata 15.4)")
+	script[pp] = xfer{"packet params inverted IQ",
 		[]byte{0x8C, 0x00, 0x20, 0x00, 0xFF, 0x01, 0x01}, nil}
-	script[8] = xfer{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
-		[]byte{stOK, stOK, stOK, stOK, 0x0D}}
 	// bit 2 must be cleared for inverted IQ: 0x0D -> 0x09, so a write
 	// follows the read.
 	rest := make([]xfer, 0, len(script)+1)
-	rest = append(rest, script[:9]...)
+	rest = append(rest, script[:iq+1]...)
 	rest = append(rest, xfer{"errata 15.4 write", []byte{0x0D, 0x07, 0x36, 0x09}, nil})
-	rest = append(rest, script[9:]...)
+	rest = append(rest, script[iq+1:]...)
 	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true}, rest)
 	if err := r.Configure(p); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 	c.done()
+}
+
+// A 433 MHz channel must get the low-band calibration — the published
+// image window, the 470-490 AGC column (the nearest data Semtech
+// publishes below 600 MHz) and a gain byte carrying the low-band
+// AgcSensiAdjust. The lab bench cannot exercise this band; the
+// transcript is what keeps it honest.
+func TestConfigure433LowBand(t *testing.T) {
+	steps := []xfer{
+		{"standby RC", []byte{0x80, 0x00}, nil},
+		{"packet type LoRa", []byte{0x8A, 0x01}, nil},
+		{"clear device errors", []byte{0x07, 0x00, 0x00}, nil},
+		{"calibrate image 430-440", []byte{0x98, 0x6B, 0x6F}, nil},
+		{"frequency 433.5 MHz", []byte{0x86, 0x1B, 0x18, 0x00, 0x00}, nil},
+		{"channel calibration verdict", []byte{0x17, 0x00, 0x00, 0x00},
+			[]byte{stOK, stOK, 0x00, 0x00}},
+		{"read RSSI meas cal H", []byte{0x1D, 0x08, 0x9C, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x21}},
+		{"RSSI meas cal H (bits 4:0)", []byte{0x0D, 0x08, 0x9C, 0x21}, nil},
+		{"RSSI meas cal L (low band)", []byte{0x0D, 0x08, 0x9D, 0x27}, nil},
+		{"GFO/RST power threshold (low band)", []byte{0x0D, 0x08, 0xB9, 0x04}, nil},
+		{"AGC gain tune (low band)",
+			[]byte{0x0D, 0x08, 0xF5, 0xDE, 0xE2, 0x32, 0x44, 0x33, 0x34, 0x04}, nil},
+		{"modulation SF8/62.5k/CR4-8", []byte{0x8B, 0x08, 0x03, 0x04, 0x00}, nil},
+		{"packet params pre=32 explicit CRC", []byte{0x8C, 0x00, 0x20, 0x00, 0xFF, 0x01, 0x00}, nil},
+		{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x0D}},
+		{"sync word 0x12 -> 14 24", []byte{0x0D, 0x07, 0x40, 0x14, 0x24}, nil},
+		{"buffer base addresses", []byte{0x8F, 0x00, 0x00}, nil},
+		{"RX gain byte (low band, boosted)", []byte{0x0D, 0x08, 0xAC, 0x8A}, nil},
+		{"retention slot count", []byte{0x0D, 0x02, 0x9F, 0x01}, nil},
+		{"retention addr MSB", []byte{0x0D, 0x02, 0xA0, 0x08}, nil},
+		{"retention addr LSB", []byte{0x0D, 0x02, 0xA1, 0xAC}, nil},
+	}
+	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true, RXBoostedGain: true}, steps)
+	p := meshcoreEU()
+	p.Frequency = 433_500_000
+	if err := r.Configure(p); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	c.done()
+}
+
+// Frequencies outside every characterised band get an image window
+// computed around themselves, and frequencies outside the synthesiser
+// range are refused.
+func TestFrequencyEdges(t *testing.T) {
+	if lo, hi := imageCalibrationBand(490_500_000); lo != 0x75 || hi != 0x81 {
+		t.Errorf("490.5 MHz: %#x %#x, want the published 470-510 pair", lo, hi)
+	}
+	if lo, hi := imageCalibrationBand(169_000_000); lo != byte((169-4)/4) || hi != byte((169+4)/4) {
+		t.Errorf("169 MHz: %#x %#x, want a window around the frequency", lo, hi)
+	}
+	if lo, hi := imageCalibrationBand(950_000_000); lo != byte((950-4)/4) || hi != byte((950+4)/4) {
+		t.Errorf("950 MHz: %#x %#x, want a window around the frequency", lo, hi)
+	}
+	r, _ := rig(t, nil)
+	p := meshcoreEU()
+	p.Frequency = 1_200_000_000
+	if err := r.Configure(p); !errors.Is(err, ErrBadConfig) {
+		t.Errorf("1.2 GHz accepted: %v", err)
+	}
+	p.Frequency = 100_000_000
+	if err := r.Configure(p); !errors.Is(err, ErrBadConfig) {
+		t.Errorf("100 MHz accepted: %v", err)
+	}
 }
 
 // The full happy path of a reception: everything about the frame is
