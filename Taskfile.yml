@@ -1,0 +1,52 @@
+# Development tasks. `task check` is the gate: everything a commit must
+# pass, in the order that fails fastest.
+version: "3"
+
+tasks:
+  default:
+    deps: [check]
+
+  test:
+    desc: Run the test suite (includes the SPI transcript harness)
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Tests under the race detector — must stay clean even though a
+      Radio is single-owner by contract
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: Strict lint baseline (see .golangci.yml for the exceptions)
+    cmds:
+      - golangci-lint run ./...
+
+  vuln:
+    desc: Scan dependencies for known vulnerabilities
+    cmds:
+      - govulncheck ./...
+
+  fmt:
+    desc: Verify formatting without rewriting anything
+    cmds:
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+  tidy:
+    desc: Verify go.mod/go.sum are minimal and complete
+    cmds:
+      - go mod tidy -diff
+
+  check:
+    desc: The full gate — what CI runs, what a commit must pass
+    cmds:
+      - task: fmt
+      - task: tidy
+      - task: lint
+      - task: test:race
+      - task: vuln
+
+  bench:build:
+    desc: Cross-compile lorabench for a 64-bit ARM board
+    cmds:
+      - GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/lorabench-arm64 ./cmd/lorabench

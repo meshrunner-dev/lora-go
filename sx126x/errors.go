@@ -7,6 +7,10 @@ import "errors"
 // received-to-corrupt ratio is a standard site-health metric, which is
 // why both are exported and distinguishable with errors.Is.
 var (
+	// ErrBadConfig reports an impossible board description: missing
+	// required pins, an unknown TCXO voltage.
+	ErrBadConfig = errors.New("sx126x: invalid board configuration")
+
 	// ErrNoDevice means the bus answered with all-zeros or all-ones:
 	// electrically, nobody home. Check wiring and the spidev path.
 	ErrNoDevice = errors.New("sx126x: no device on the bus")

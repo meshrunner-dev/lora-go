@@ -52,7 +52,7 @@ const (
 // RFSwitch steers an antenna switch the host controls. Boards that let
 // the chip drive the switch itself (DIO2) need none.
 type RFSwitch interface {
-	Set(RFMode) error
+	Set(mode RFMode) error
 	Close() error
 }
 

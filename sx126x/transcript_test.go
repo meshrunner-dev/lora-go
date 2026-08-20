@@ -33,7 +33,7 @@ func TestOpenNoDevice(t *testing.T) {
 // A TCXO misconfiguration must fail Open with the crystal verdict, not
 // return a deaf Radio.
 func TestOpenCrystalFailure(t *testing.T) {
-	steps := openScript(Config{})[:10] // up to the crystal verdict
+	steps := openScript()[:10] // up to the crystal verdict
 	steps[9] = xfer{"crystal verdict: XOSC_START_ERR", []byte{0x17, 0x00, 0x00, 0x00},
 		[]byte{stOK, stOK, 0x00, 0x20}}
 	c := &chip{t: t, steps: steps}
@@ -69,8 +69,9 @@ func TestInvertIQErrata(t *testing.T) {
 		[]byte{stOK, stOK, stOK, stOK, 0x0D}}
 	// bit 2 must be cleared for inverted IQ: 0x0D -> 0x09, so a write
 	// follows the read.
-	rest := append(script[:9:9],
-		xfer{"errata 15.4 write", []byte{0x0D, 0x07, 0x36, 0x09}, nil})
+	rest := make([]xfer, 0, len(script)+1)
+	rest = append(rest, script[:9]...)
+	rest = append(rest, xfer{"errata 15.4 write", []byte{0x0D, 0x07, 0x36, 0x09}, nil})
 	rest = append(rest, script[9:]...)
 	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true}, rest)
 	if err := r.Configure(p); err != nil {

@@ -120,7 +120,7 @@ func rig(t *testing.T, steps []xfer) (*Radio, *chip) {
 // resulting Radio with the remaining steps loaded.
 func openRig(t *testing.T, cfg Config, rest []xfer) (*Radio, *chip) {
 	t.Helper()
-	c := &chip{t: t, steps: append(openScript(cfg), rest...)}
+	c := &chip{t: t, steps: append(openScript(), rest...)}
 	pins := lora.Pins{
 		Reset: &fakePin{c},
 		Busy:  &fakeBusy{c},
@@ -136,7 +136,7 @@ func openRig(t *testing.T, cfg Config, rest []xfer) (*Radio, *chip) {
 
 // openScript is the pinned bring-up transcript for a TCXO 1.8 V DC-DC
 // board — the exact sequence validated on the air.
-func openScript(cfg Config) []xfer {
+func openScript() []xfer {
 	version := make([]byte, 20)
 	for i := range 4 {
 		version[i] = stOK // status bytes precede the register data

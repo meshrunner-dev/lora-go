@@ -37,6 +37,9 @@ type spiTransfer struct {
 	wordDelayUsecs, pad   uint8
 }
 
+// errLenMismatch: Transfer is full duplex, so both buffers must match.
+var errLenMismatch = errors.New("lora/linux: SPI transfer length mismatch")
+
 // SPI is a spidev bus, e.g. /dev/spidev0.0.
 type SPI struct {
 	f     *os.File
@@ -77,7 +80,7 @@ func OpenSPI(path string, speedHz uint32) (*SPI, error) {
 // two slices must have the same length.
 func (s *SPI) Transfer(tx, rx []byte) error {
 	if len(tx) != len(rx) {
-		return fmt.Errorf("lora/linux: SPI transfer: tx is %d bytes, rx is %d", len(tx), len(rx))
+		return fmt.Errorf("%w: tx is %d bytes, rx is %d", errLenMismatch, len(tx), len(rx))
 	}
 	if len(tx) == 0 {
 		return nil

@@ -130,11 +130,11 @@ type Radio struct {
 // From here on the Radio owns spi and pins: Close releases them.
 func Open(spi lora.SPI, pins lora.Pins, cfg Config) (*Radio, error) {
 	if pins.Reset == nil || pins.Busy == nil || pins.DIO1 == nil {
-		return nil, fmt.Errorf("%w: Reset, Busy and DIO1 pins are required", ErrNoDevice)
+		return nil, fmt.Errorf("%w: Reset, Busy and DIO1 pins are required", ErrBadConfig)
 	}
 	if cfg.TCXO != TCXONone {
 		if _, ok := cfg.TCXO.code(); !ok {
-			return nil, fmt.Errorf("sx126x: unknown TCXO voltage %d", cfg.TCXO)
+			return nil, fmt.Errorf("%w: unknown TCXO voltage %d", ErrBadConfig, cfg.TCXO)
 		}
 	}
 	if cfg.TCXOTimeout <= 0 {
@@ -168,31 +168,8 @@ func (r *Radio) initChip() error {
 		return err
 	}
 
-	if code, ok := r.cfg.TCXO.code(); ok {
-		// Timeout counts in 15.625 us ticks, 24 bits wide.
-		ticks := uint64(r.cfg.TCXOTimeout / (15625 * time.Nanosecond))
-		if ticks > 0xFFFFFF {
-			ticks = 0xFFFFFF
-		}
-		if _, err := r.dev.cmd(opSetDio3AsTcxoCtrl, code,
-			byte(ticks>>16), byte(ticks>>8), byte(ticks)); err != nil {
-			return err
-		}
-		// A reset leaves the crystal error latched from before the TCXO
-		// was configured; clear it so the verdicts below are fresh.
-		if err := r.dev.clearDeviceErrors(); err != nil {
-			return err
-		}
-		// Calibration reports failure only through the error word — the
-		// command itself "succeeds" on the bus whatever happens. BUSY
-		// stays high for the duration, so the next command's handshake
-		// is the wait.
-		if _, err := r.dev.cmd(opCalibrate, 0x7F); err != nil {
-			return err
-		}
-		if err := r.dev.checkDeviceErrors("calibration"); err != nil {
-			return err
-		}
+	if err := r.setupTCXO(); err != nil {
+		return err
 	}
 	if r.cfg.DIO2AsRFSwitch {
 		if _, err := r.dev.cmd(opSetDio2AsRfSwitch, 0x01); err != nil {
@@ -228,6 +205,33 @@ func (r *Radio) initChip() error {
 	}
 	_, err := r.dev.cmd(opSetStandby, standbyRC)
 	return err
+}
+
+// setupTCXO powers the oscillator from DIO3 and calibrates against it.
+func (r *Radio) setupTCXO() error {
+	code, ok := r.cfg.TCXO.code()
+	if !ok {
+		return nil // bare crystal: nothing to power
+	}
+	// Timeout counts in 15.625 us ticks, 24 bits wide.
+	ticks := min(uint64(r.cfg.TCXOTimeout/(15625*time.Nanosecond)), 0xFFFFFF)
+	if _, err := r.dev.cmd(opSetDio3AsTcxoCtrl, code,
+		byte(ticks>>16), byte(ticks>>8), byte(ticks)); err != nil {
+		return err
+	}
+	// A reset leaves the crystal error latched from before the TCXO
+	// was configured; clear it so the verdicts below are fresh.
+	if err := r.dev.clearDeviceErrors(); err != nil {
+		return err
+	}
+	// Calibration reports failure only through the error word — the
+	// command itself "succeeds" on the bus whatever happens. BUSY stays
+	// high for the duration, so the next command's handshake is the
+	// wait.
+	if _, err := r.dev.cmd(opCalibrate, 0x7F); err != nil {
+		return err
+	}
+	return r.dev.checkDeviceErrors("calibration")
 }
 
 // versionString extracts the printable prefix of the version area.
@@ -312,7 +316,7 @@ func (r *Radio) applyChannel(p lora.Params) error {
 	}
 
 	if err := r.dev.writeRegister(regLoRaSyncWordMSB,
-		byte(p.SyncWord&0xF0)|0x04, byte(p.SyncWord<<4)|0x04); err != nil {
+		p.SyncWord&0xF0|0x04, p.SyncWord<<4|0x04); err != nil {
 		return err
 	}
 	if _, err := r.dev.cmd(opSetBufferBaseAddress, 0x00, 0x00); err != nil {

@@ -131,10 +131,10 @@ func (r *Radio) collect(flags IRQ) (*RxFrame, error) {
 		if err := r.dev.clearIRQ(IRQHeaderErr); err != nil {
 			return nil, err
 		}
-		return nil, nil
+		return nil, nil //nolint:nilnil // Poll's documented "nothing yet"
 
 	default:
-		return nil, nil
+		return nil, nil //nolint:nilnil // Poll's documented "nothing yet"
 	}
 }
 
@@ -282,9 +282,9 @@ func (r *Radio) AssessChannel(ctx context.Context, symbols CADSymbols) (busy boo
 	if _, err := r.dev.cmd(opSetStandby, standbyRC); err != nil {
 		return false, err
 	}
-	peak, min := cadDetection(r.params.SF)
 	if _, err := r.dev.cmd(opSetCadParams,
-		byte(symbols), peak, min, 0x00 /* exit to standby */, 0x00, 0x00, 0x00); err != nil {
+		byte(symbols), cadDetPeak(r.params.SF), cadDetMin,
+		0x00 /* exit to standby */, 0x00, 0x00, 0x00); err != nil {
 		return false, err
 	}
 	const cadFlags = IRQCadDone | IRQCadDetected
@@ -391,26 +391,28 @@ func symbolCount(s CADSymbols) int {
 	}
 }
 
-// cadDetection returns the peak and minimum detection thresholds
-// Semtech recommends for a spreading factor (application note
-// AN1200.48).
-func cadDetection(sf lora.SpreadingFactor) (peak, minimum byte) {
+// CAD detection thresholds Semtech recommends (application note
+// AN1200.48): the minimum is 10 across the board, the peak scales with
+// the spreading factor.
+const cadDetMin byte = 10
+
+func cadDetPeak(sf lora.SpreadingFactor) byte {
 	switch sf {
 	case lora.SF5:
-		return 18, 10
+		return 18
 	case lora.SF6:
-		return 19, 10
+		return 19
 	case lora.SF7:
-		return 20, 10
+		return 20
 	case lora.SF8:
-		return 21, 10
+		return 21
 	case lora.SF9:
-		return 22, 10
+		return 22
 	case lora.SF10:
-		return 23, 10
+		return 23
 	case lora.SF11:
-		return 24, 10
+		return 24
 	default:
-		return 25, 10
+		return 25
 	}
 }

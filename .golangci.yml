@@ -1,0 +1,108 @@
+# Strict baseline: everything on, then a curated list of exceptions —
+# each disable is either pure style noise or a rule that fights the
+# nature of this repo (a hardware driver full of register bytes, with
+# transcript-heavy tests).
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # Style opinions with no defect-finding value.
+    - nlreturn
+    - wsl
+    - wsl_v5
+    - varnamelen
+    - ireturn
+    # Require a curated import allowlist; overkill for three dependencies.
+    - depguard
+    - gomodguard
+    # Demand every struct literal list all fields; zero values are
+    # idiomatic Go and kill readable tests.
+    - exhaustruct
+    # `if err := f(); err != nil` is the language's own idiom.
+    - noinlineerr
+    # A register map is legitimately full of magic numbers; naming each
+    # would only push the datasheet reference one hop away.
+    - mnd
+    # Same-package tests are deliberate: the transcript harness drives
+    # unexported internals (the device layer, the expiry clock).
+    - testpackage
+    # A driver returns its own sentinel errors; wrapping every stdlib
+    # error would bloat the API surface.
+    - wrapcheck
+    # Tests share one scripted chip per case and are sequential by
+    # construction.
+    - paralleltest
+    # Files are ordered by lifecycle narrative (Open next to its init
+    # helpers, Configure next to its apply), not by visibility.
+    - funcorder
+    # Multi-value returns of one type ((rssi, snr), (preamble, header),
+    # (lo, hi)) need names to be documentable, and AssessChannel's
+    # named error is load-bearing for its restore-on-every-path defer.
+    - nonamedreturns
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    gosec:
+      excludes:
+        # G115 (integer truncation): a register driver truncates by
+        # design — every conversion is masked or bounds-checked against
+        # the field width the datasheet gives it.
+        - G115
+    cyclop:
+      max-complexity: 20
+    gocognit:
+      min-complexity: 25
+    gocyclo:
+      min-complexity: 20
+    lll:
+      line-length: 120
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+    gochecknoglobals: {}
+
+  exclusions:
+    rules:
+      # CLI declaration tags (kong) carry inline help texts that cannot
+      # wrap.
+      - linters: [lll]
+        source: '`.*(cmd|arg|help|enum|placeholder):'
+
+      # cmd/ tools are CLIs: printing to stdout is their purpose.
+      - path: ^cmd/
+        linters:
+          - forbidigo
+
+      # Lookup tables (IRQ names, device-error names, TCXO voltages)
+      # are package-level by nature.
+      - linters: [gochecknoglobals]
+        source: 'Names = |tcxoVoltages'
+
+      # The ioctl layer is what the unsafe package exists for; every
+      # conversion is pinned and commented.
+      - path: ^linux/spi\.go$
+        linters: [gosec]
+
+      # Test files: pinned byte transcripts trip length and duplication
+      # linters by design.
+      - path: _test\.go
+        linters:
+          - gosec
+          - dupl
+          - funlen
+          - gochecknoglobals
+          - goconst
+          - lll
+          - maintidx
+          - err113
+          - errcheck
+          - cyclop
+          - gocognit
+          - gocyclo
+
+formatters:
+  enable:
+    - gofmt
