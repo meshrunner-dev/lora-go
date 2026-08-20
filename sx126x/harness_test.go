@@ -194,6 +194,10 @@ func configureScript() []xfer {
 		{"AGC gain tune (high band: zeros)",
 			[]byte{0x0D, 0x08, 0xF5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, nil},
 		{"modulation SF8/62.5k/CR4-8", []byte{0x8B, 0x08, 0x03, 0x04, 0x00}, nil},
+		// Errata §15.1: bit 2 read back set — correct for every
+		// bandwidth but 500 kHz, so no write follows.
+		{"sensitivity config (errata 15.1)", []byte{0x1D, 0x08, 0x89, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x04}},
 		{"packet params pre=32 explicit CRC", []byte{0x8C, 0x00, 0x20, 0x00, 0xFF, 0x01, 0x00}, nil},
 		{"read IQ polarity (errata 15.4)", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
 			[]byte{stOK, stOK, stOK, stOK, 0x0D}},

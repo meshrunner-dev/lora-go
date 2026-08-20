@@ -51,6 +51,11 @@ const (
 	// 868-915 MHz column into every channel.
 	regRxGain = 0x08AC
 
+	// regSensitivityConfig carries the errata §15.1 workaround: bit 2
+	// must be cleared for LoRa at 500 kHz and set for everything else,
+	// or 500 kHz reception loses sensitivity.
+	regSensitivityConfig = 0x0889
+
 	// The rest of the DS §6.1.6 (Table 6-4) RSSI/AGC calibration set.
 	// Semtech: an incorrect value here yields "an incorrect gain
 	// selection in LoRa and GFSK mode", i.e. missed detections — this

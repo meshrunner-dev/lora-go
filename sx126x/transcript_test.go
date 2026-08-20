@@ -122,6 +122,8 @@ func TestConfigure433LowBand(t *testing.T) {
 		{"AGC gain tune (low band)",
 			[]byte{0x0D, 0x08, 0xF5, 0xDE, 0xE2, 0x32, 0x44, 0x33, 0x34, 0x04}, nil},
 		{"modulation SF8/62.5k/CR4-8", []byte{0x8B, 0x08, 0x03, 0x04, 0x00}, nil},
+		{"sensitivity config (errata 15.1)", []byte{0x1D, 0x08, 0x89, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x04}},
 		{"packet params pre=32 explicit CRC", []byte{0x8C, 0x00, 0x20, 0x00, 0xFF, 0x01, 0x00}, nil},
 		{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
 			[]byte{stOK, stOK, stOK, stOK, 0x0D}},
@@ -135,6 +137,26 @@ func TestConfigure433LowBand(t *testing.T) {
 	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true, RXBoostedGain: true}, steps)
 	p := meshcoreEU()
 	p.Frequency = 433_500_000
+	if err := r.Configure(p); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	c.done()
+}
+
+// At 500 kHz the errata §15.1 bit must be CLEARED — the one bandwidth
+// where the read-modify-write produces a write.
+func TestConfigure500kSensitivityFix(t *testing.T) {
+	script := configureScript()
+	script[stepIndex(script, "modulation SF8/62.5k/CR4-8")] =
+		xfer{"modulation SF8/500k/CR4-8", []byte{0x8B, 0x08, 0x06, 0x04, 0x00}, nil}
+	i := stepIndex(script, "sensitivity config (errata 15.1)")
+	patched := make([]xfer, 0, len(script)+1)
+	patched = append(patched, script[:i+1]...)
+	patched = append(patched, xfer{"errata 15.1 write: clear bit 2", []byte{0x0D, 0x08, 0x89, 0x00}, nil})
+	patched = append(patched, script[i+1:]...)
+	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true}, patched)
+	p := meshcoreEU()
+	p.BW = lora.BW500000
 	if err := r.Configure(p); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}

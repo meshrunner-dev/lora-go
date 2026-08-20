@@ -336,6 +336,10 @@ func (r *Radio) applyChannel(p lora.Params) error {
 		byte(p.SF), bandwidthCode(p.BW), byte(p.CR)-4, ldro); err != nil {
 		return err
 	}
+
+	if err := r.applySensitivityFix(p.BW); err != nil {
+		return err
+	}
 	if err := r.setPacketParams(p, rxPayloadLen(p)); err != nil {
 		return err
 	}
@@ -424,6 +428,25 @@ func rxGainByte(freq uint32, boosted bool) byte {
 		b |= 0x02
 	}
 	return b
+}
+
+// applySensitivityFix applies errata §15.1: bit 2 of the sensitivity
+// register must be cleared for LoRa at 500 kHz and set for every other
+// bandwidth — a channel that once ran at 500 kHz would otherwise leave
+// the workaround stuck on. Written only when the value changes.
+func (r *Radio) applySensitivityFix(bw lora.Bandwidth) error {
+	cur, err := r.dev.readRegister(regSensitivityConfig, 1)
+	if err != nil {
+		return err
+	}
+	sens := cur[0] | 0x04
+	if bw == lora.BW500000 {
+		sens = cur[0] &^ 0x04
+	}
+	if sens == cur[0] {
+		return nil
+	}
+	return r.dev.writeRegister(regSensitivityConfig, sens)
 }
 
 // rxPayloadLen is the length programmed for reception: the agreed frame
