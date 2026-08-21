@@ -217,3 +217,52 @@ func TestTransmitChipTimeout(t *testing.T) {
 }
 
 var _ = lora.RFTransmit // the RF switch path is exercised on boards that have one
+
+// The SX1261 transmit path differs from the SX1262/68 one in two ways,
+// both pinned here end to end: it skips the errata §15.2 PA clamping
+// (that guards the high-power PA only), and SetPaConfig selects the
+// low-power PA with deviceSel=1. At 15 dBm the datasheet's special case
+// also raises the duty cycle to 6 and programs 14 — so this single
+// transcript exercises both SX1261-specific behaviours.
+func TestTransmitSX1261(t *testing.T) {
+	cfg := Config{TCXO: TCXO1V8, UseDCDC: true, Chip: SX1261, MaxTxPower: 15}
+	payload := []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x42}
+	steps := append(configureScript(), startReceiveScript()...)
+	steps = append(steps,
+		irqReadStep(0),
+		statusStep(stRX),
+		xfer{"standby for TX", []byte{0x80, 0x00}, nil},
+		// No clamp read/write: §15.2 is SX1262/68 only.
+		xfer{"save OCP", []byte{0x1D, 0x08, 0xE7, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x18}},
+		// 15 dBm special case: duty 6, hpMax 0, deviceSel 1 (SX1261 PA).
+		xfer{"PA config 15 dBm SX1261", []byte{0x95, 0x06, 0x00, 0x01, 0x01}, nil},
+		xfer{"restore OCP", []byte{0x0D, 0x08, 0xE7, 0x18}, nil},
+		xfer{"TX params: value 14, 200us ramp", []byte{0x8E, 0x0E, 0x04}, nil},
+		xfer{"packet params for this frame", []byte{0x8C, 0x00, 0x20, 0x00, 0x05, 0x01, 0x00}, nil},
+		xfer{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x0D}},
+		xfer{"stage payload", append([]byte{0x0E, 0x00}, payload...), nil},
+		xfer{"clear TX flags", []byte{0x02, 0x02, 0x01}, nil},
+		xfer{"TX IRQ routing", []byte{0x08, 0x02, 0x01, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00}, nil},
+		xfer{"start TX, airtime-scaled timeout", []byte{0x83, 0x00, 0xCA, 0x1E}, nil},
+		irqReadStep(IRQTxDone),
+		xfer{"clear TxDone", []byte{0x02, 0x00, 0x01}, nil},
+		xfer{"standby (hand-back)", []byte{0x80, 0x00}, nil},
+		xfer{"packet params back to RX", []byte{0x8C, 0x00, 0x20, 0x00, 0xFF, 0x01, 0x00}, nil},
+		xfer{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x0D}},
+	)
+	steps = append(steps, startReceiveScript()...)
+	r, c := openRig(t, cfg, steps)
+	if err := r.Configure(meshcoreEU()); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if err := r.StartReceive(); err != nil {
+		t.Fatalf("StartReceive: %v", err)
+	}
+	if _, err := r.Transmit(context.Background(), payload, 15); err != nil {
+		t.Fatalf("Transmit: %v", err)
+	}
+	c.done()
+}
