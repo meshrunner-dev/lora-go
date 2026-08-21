@@ -89,8 +89,14 @@ full gate.
 ## Status
 
 Receive, channel assessment, transmit and the recovery lifecycle are
-implemented and tested against transcripts; the receive side is
-validated on hardware, the transmit side awaits its bench pass.
+implemented and tested against transcripts, and validated on hardware:
+the receiver hears a live mesh, and the transmitter has keyed up —
+frames it sent were picked up and answered by other nodes, confirming
+real RF, correct antenna switching and a clean hand-back to receive.
+What is not instrument-verified is absolute output power: the ceiling
+is enforced (Transmit refuses to exceed it), but the power-table dBm
+figures are the reference campaign's, not measured here against a
+power meter.
 
 Transmitting is opt-in twice over: `Config.Chip` declares the exact
 part — the PA tables differ destructively between SX1261 and SX1262/68,
