@@ -199,10 +199,8 @@ func (r *Radio) initChip() error {
 	if err := r.setupTCXO(); err != nil {
 		return err
 	}
-	if r.cfg.DIO2AsRFSwitch {
-		if _, err := r.dev.cmd(opSetDio2AsRfSwitch, 0x01); err != nil {
-			return err
-		}
+	if err := r.applyRFSwitch(); err != nil {
+		return err
 	}
 	reg := byte(0x00) // LDO
 	if r.cfg.UseDCDC {
@@ -342,6 +340,12 @@ func (r *Radio) applyChannel(p lora.Params) error {
 	if err := r.dev.checkDeviceErrors("channel calibration"); err != nil {
 		return err
 	}
+	// CalibrateImage resets the DIO2-as-RF-switch setting, so re-apply
+	// it here — without this, a board that routes its antenna switch to
+	// DIO2 loses the switch after every Configure and goes deaf.
+	if err := r.applyRFSwitch(); err != nil {
+		return err
+	}
 	if err := r.applyAGCBandCal(p.Frequency); err != nil {
 		return err
 	}
@@ -477,6 +481,19 @@ func rxPayloadLen(p lora.Params) byte {
 	return 0xFF
 }
 
+// applyRFSwitch tells the chip to drive the antenna switch from DIO2,
+// when the board is wired that way. Calibration silently clears this
+// setting (both the full Calibrate and CalibrateImage), so it is
+// re-applied after every one — a board that routes its switch to DIO2
+// goes deaf the moment it is lost.
+func (r *Radio) applyRFSwitch() error {
+	if !r.cfg.DIO2AsRFSwitch {
+		return nil
+	}
+	_, err := r.dev.cmd(opSetDio2AsRfSwitch, 0x01)
+	return err
+}
+
 // applyRXTuning writes the receiver settings that are not part of the
 // modulation: the shared gain/AgcSensiAdjust byte and the undocumented
 // patch. Silently cleared by calibration, so this runs after every one
@@ -585,10 +602,8 @@ func (r *Radio) ResetAGC() error {
 		return err
 	}
 
-	if r.cfg.DIO2AsRFSwitch {
-		if _, err := r.dev.cmd(opSetDio2AsRfSwitch, 0x01); err != nil {
-			return err
-		}
+	if err := r.applyRFSwitch(); err != nil {
+		return err
 	}
 	// Replay the entire channel. Working out exactly which settings a
 	// calibration clears is a losing game — the datasheet is silent, and

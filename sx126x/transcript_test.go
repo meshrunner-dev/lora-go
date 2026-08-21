@@ -496,3 +496,39 @@ func TestCommandFailureSurfaces(t *testing.T) {
 	}
 	c.done()
 }
+
+// A board that routes its antenna switch to DIO2 must keep that setting
+// across Configure: CalibrateImage resets it, so the driver re-applies
+// it both at Open (after the full calibration) and in Configure (after
+// the image calibration). Without the second, the switch is lost and
+// the radio goes deaf — the bug this pins.
+func TestDIO2SwitchReappliedAfterCalibration(t *testing.T) {
+	const setDIO2 = "SetDio2AsRfSwitch"
+	// Open script with DIO2 re-application after the full calibration.
+	open := openScript()
+	oi := stepIndex(open, "calibration verdict")
+	openD := make([]xfer, 0, len(open)+1)
+	openD = append(openD, open[:oi+1]...)
+	openD = append(openD, xfer{setDIO2, []byte{0x9D, 0x01}, nil})
+	openD = append(openD, open[oi+1:]...)
+
+	// Configure script with DIO2 re-application after image calibration.
+	conf := configureScript()
+	ci := stepIndex(conf, "channel calibration verdict")
+	confD := make([]xfer, 0, len(conf)+1)
+	confD = append(confD, conf[:ci+1]...)
+	confD = append(confD, xfer{setDIO2, []byte{0x9D, 0x01}, nil})
+	confD = append(confD, conf[ci+1:]...)
+
+	c := &chip{t: t, steps: append(openD, confD...)}
+	pins := lora.Pins{Reset: &fakePin{c}, Busy: &fakeBusy{c}, DIO1: &fakeDIO1{c: c, edges: make(chan struct{}, 1)}}
+	r, err := Open(&fakeSPI{c}, pins, Config{TCXO: TCXO1V8, UseDCDC: true, DIO2AsRFSwitch: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	r.dev.busyTimeout = 5 * time.Millisecond
+	if err := r.Configure(meshcoreEU()); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	c.done()
+}
