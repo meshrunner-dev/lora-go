@@ -19,7 +19,11 @@ func frameScript(payload []byte) []xfer {
 			[]byte{stOK, stOK, byte(len(payload)), 0x00}},
 		{"read buffer", append([]byte{0x1E, 0x00, 0x00}, make([]byte, len(payload))...), buf},
 		{"packet status", []byte{0x14, 0x00, 0x00, 0x00, 0x00},
-			[]byte{stOK, stOK, 176, 49}},
+			[]byte{stOK, stOK, 176, 49, 190}},
+		// Raw 0xFFFE0: sign bit set, two's complement -32 → -1.9375 Hz
+		// at 62.5 kHz.
+		{"frequency error", []byte{0x1D, 0x07, 0x6B, 0x00, 0x00, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x0F, 0xFF, 0xE0}},
 		{"narrow clear of what was read", []byte{0x02, 0x00, 0x1E}, nil},
 	}
 }
@@ -50,6 +54,9 @@ func TestReceiveWakesOnLevelNotEdge(t *testing.T) {
 	if string(frame.Payload) != string(payload) {
 		t.Errorf("payload = % X", frame.Payload)
 	}
+	if frame.FreqErr != -1.9375 {
+		t.Errorf("FreqErr = %v, want -1.9375 (20-bit sign extension)", frame.FreqErr)
+	}
 }
 
 // With the watchdog armed, even a transition missed while asleep — the
@@ -77,6 +84,28 @@ func TestReceiveWatchdogRecoversWhileAsleep(t *testing.T) {
 	if string(frame.Payload) != string(payload) {
 		t.Errorf("payload = % X", frame.Payload)
 	}
+}
+
+func TestChipStats(t *testing.T) {
+	r, c := openRig(t, Config{TCXO: TCXO1V8, UseDCDC: true}, append(configureScript(),
+		xfer{"get stats", []byte{0x10, 0, 0, 0, 0, 0, 0, 0},
+			[]byte{stOK, stOK, 0x01, 0x2C, 0x00, 0x05, 0x00, 0x02}},
+		xfer{"reset stats", []byte{0x00, 0, 0, 0, 0, 0, 0}, nil},
+	))
+	if err := r.Configure(meshcoreEU()); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	s, err := r.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if s.Received != 300 || s.CRCErrors != 5 || s.HeaderErrors != 2 {
+		t.Errorf("stats = %+v, want 300/5/2", s)
+	}
+	if err := r.ResetStats(); err != nil {
+		t.Fatalf("ResetStats: %v", err)
+	}
+	c.done()
 }
 
 // Without a watchdog the wait is purely edge-driven: no edge, low

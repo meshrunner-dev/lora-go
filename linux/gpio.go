@@ -4,8 +4,11 @@ package linux
 
 import (
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	"github.com/warthog618/go-gpiocdev"
+	"golang.org/x/sys/unix"
 
 	"meshrunner.dev/pkg/lora"
 )
@@ -86,20 +89,35 @@ type EdgeLine struct {
 	l      *gpiocdev.Line
 	offset int
 	edges  chan struct{}
+	// lastEdge is the kernel's timestamp for the most recent edge, as
+	// wall-clock unix nanoseconds; zero until the first edge. The
+	// kernel stamps events in its interrupt path, so this is
+	// microsecond truth unstretched by scheduling.
+	lastEdge atomic.Int64
+	// bootWall anchors the kernel's monotonic event clock to the wall.
+	bootWall time.Time
 }
 
 var _ lora.InterruptPin = (*EdgeLine)(nil)
 
 // Interrupt requests an input watching rising edges. The edge callback
-// does nothing but a non-blocking send — the "handler is one signal"
+// does nothing but stamp and signal — the "handler is one signal"
 // rule — so it never touches SPI and never blocks the kernel's event
 // delivery.
 func Interrupt(chip string, offset int) (*EdgeLine, error) {
 	g := &EdgeLine{offset: offset, edges: make(chan struct{}, 1)}
+	// Kernel event timestamps count from boot on the monotonic clock;
+	// anchor that origin to the wall once, here.
+	var mono unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono); err != nil {
+		return nil, fmt.Errorf("lora/linux: monotonic clock: %w", err)
+	}
+	g.bootWall = time.Now().Add(-time.Duration(mono.Nano()))
 	l, err := gpiocdev.RequestLine(chip, offset,
 		gpiocdev.WithRisingEdge,
 		gpiocdev.WithConsumer("lora"),
-		gpiocdev.WithEventHandler(func(gpiocdev.LineEvent) {
+		gpiocdev.WithEventHandler(func(ev gpiocdev.LineEvent) {
+			g.lastEdge.Store(g.bootWall.Add(ev.Timestamp).UnixNano())
 			select {
 			case g.edges <- struct{}{}:
 			default: // a pending signal already says "go look"
@@ -110,6 +128,16 @@ func Interrupt(chip string, offset int) (*EdgeLine, error) {
 	}
 	g.l = l
 	return g, nil
+}
+
+// LastEdge reports the kernel's timestamp for the most recent rising
+// edge; ok is false until one has been seen.
+func (g *EdgeLine) LastEdge() (time.Time, bool) {
+	ns := g.lastEdge.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
 }
 
 // Get reads the line's current level.

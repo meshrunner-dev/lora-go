@@ -18,9 +18,20 @@ const rxMask = irqOutcome | irqProgress
 // RxFrame is a received frame and what the radio measured about it.
 type RxFrame struct {
 	Payload []byte
-	RSSI    float64       // dBm
-	SNR     float64       // dB
-	At      time.Time     // when the driver observed RxDone
+	RSSI    float64 // dBm, averaged over the payload — signal plus noise
+	SNR     float64 // dB
+	// SignalRSSI is the despread signal's own power. Below the noise
+	// floor — LoRa's home turf — the plain RSSI mostly measures the
+	// noise; this estimates the signal that was actually in it.
+	SignalRSSI float64 // dBm
+	// FreqErr is the sender's carrier offset as the demodulator saw
+	// it: how far their crystal sat from ours. A node that drifts here
+	// frame after frame has a failing oscillator.
+	FreqErr float64 // Hz
+	// At is when the frame completed: the DIO1 edge's kernel timestamp
+	// when the transport captured one recently — microsecond truth
+	// from the interrupt path — otherwise the driver's read time.
+	At      time.Time
 	Airtime time.Duration // computed channel occupancy of this frame
 }
 
@@ -103,7 +114,7 @@ func (r *Radio) collect(flags IRQ) (*RxFrame, error) {
 		return nil, r.finish(flags&(IRQHeaderErr|irqProgress), ErrHeader)
 
 	case flags&IRQRxDone != 0:
-		at := r.now()
+		at := r.frameTime()
 		// Read everything about the frame BEFORE clearing: the buffer
 		// status describes the last packet received, and clearing first
 		// opens a window where a new arrival is misattributed.
@@ -116,7 +127,11 @@ func (r *Radio) collect(flags IRQ) (*RxFrame, error) {
 		if err != nil {
 			return nil, err
 		}
-		rssi, snr, err := r.packetStatus()
+		rssi, snr, signal, err := r.packetStatus()
+		if err != nil {
+			return nil, err
+		}
+		ferr, err := r.frequencyError()
 		if err != nil {
 			return nil, err
 		}
@@ -124,11 +139,13 @@ func (r *Radio) collect(flags IRQ) (*RxFrame, error) {
 			return nil, err
 		}
 		return &RxFrame{
-			Payload: payload,
-			RSSI:    rssi,
-			SNR:     snr,
-			At:      at,
-			Airtime: r.params.Airtime(len(payload)),
+			Payload:    payload,
+			RSSI:       rssi,
+			SNR:        snr,
+			SignalRSSI: signal,
+			FreqErr:    ferr,
+			At:         at,
+			Airtime:    r.params.Airtime(len(payload)),
 		}, nil
 
 	case flags&IRQTimeout != 0:
@@ -490,11 +507,53 @@ func (r *Radio) readBuffer(offset byte, n int) ([]byte, error) {
 }
 
 // packetStatus reads the quality of the last frame: RSSI in half-dBm
-// steps, SNR in quarter-dB steps and signed.
-func (r *Radio) packetStatus() (rssi, snr float64, err error) {
+// steps, SNR in quarter-dB steps and signed, and the despread signal's
+// own RSSI — the bytes travel in one command, so the three always
+// describe the same frame.
+func (r *Radio) packetStatus() (rssi, snr, signalRSSI float64, err error) {
 	rx, err := r.dev.cmd(opGetPacketStatus, 0x00, 0x00, 0x00, 0x00)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return -float64(rx[2]) / 2, float64(int8(rx[3])) / 4, nil
+	return -float64(rx[2]) / 2, float64(int8(rx[3])) / 4, -float64(rx[4]) / 2, nil
+}
+
+// frequencyError reads the demodulator's carrier-offset estimate for
+// the last frame, in hertz. The register is absent from the datasheet;
+// reading it — and the scaling below — is established practice in the
+// reference drivers.
+func (r *Radio) frequencyError() (float64, error) {
+	raw, err := r.dev.readRegister(regFreqError, 3)
+	if err != nil {
+		return 0, err
+	}
+	efe := int32(raw[0]&0x0F)<<16 | int32(raw[1])<<8 | int32(raw[2])
+	if raw[0]&0x08 != 0 { // 20-bit two's complement
+		efe -= 1 << 20
+	}
+	return 1.55 * float64(efe) * (float64(r.params.BW) / 1000) / 1600, nil
+}
+
+// edgeClock is the optional precision a transport may offer: the
+// kernel's own timestamp for the last DIO1 edge.
+type edgeClock interface {
+	LastEdge() (time.Time, bool)
+}
+
+// edgeFreshness bounds how old an edge may be and still date a frame:
+// a frame is always collected within one wait of its edge, so anything
+// older belongs to an earlier life (a watchdog recovery, a missed
+// transition) and the read time is the honest fallback.
+const edgeFreshness = time.Second
+
+// frameTime dates a completed frame: the kernel-stamped DIO1 edge when
+// the transport offers one fresh enough, else the driver's read time.
+func (r *Radio) frameTime() time.Time {
+	at := r.now()
+	if ec, ok := r.dev.pins.DIO1.(edgeClock); ok {
+		if e, ok := ec.LastEdge(); ok && e.Before(at) && at.Sub(e) < edgeFreshness {
+			return e
+		}
+	}
+	return at
 }

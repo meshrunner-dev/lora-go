@@ -29,6 +29,8 @@ const (
 	opGetStatus            = 0xC0
 	opGetRxBufferStatus    = 0x13
 	opGetPacketStatus      = 0x14
+	opGetStats             = 0x10
+	opResetStats           = 0x00
 	opGetRssiInst          = 0x15
 	opGetDeviceErrors      = 0x17
 	opClearDeviceErrors    = 0x07
@@ -56,6 +58,11 @@ const (
 	regTxClampConfig = 0x08D8
 
 	regRxGain = 0x08AC
+
+	// regFreqError holds the demodulator's 20-bit carrier-offset
+	// estimate for the last LoRa frame. Absent from the datasheet;
+	// established reference-driver practice.
+	regFreqError = 0x076B
 
 	// regSensitivityConfig carries the errata §15.1 workaround: bit 2
 	// must be cleared for LoRa at 500 kHz and set for everything else,

@@ -204,7 +204,10 @@ func TestPollReceivesFrame(t *testing.T) {
 			[]byte{stOK, stOK, byte(len(payload)), 0x00}},
 		xfer{"read buffer", append([]byte{0x1E, 0x00, 0x00}, make([]byte, len(payload))...), buf},
 		xfer{"packet status", []byte{0x14, 0x00, 0x00, 0x00, 0x00},
-			[]byte{stOK, stOK, 176, 49}},
+			[]byte{stOK, stOK, 176, 49, 190}},
+		// Raw 0x00120 = +288 → +17.4375 Hz at 62.5 kHz.
+		xfer{"frequency error", []byte{0x1D, 0x07, 0x6B, 0x00, 0x00, 0x00, 0x00},
+			[]byte{stOK, stOK, stOK, stOK, 0x00, 0x01, 0x20}},
 		xfer{"narrow clear of what was read", []byte{0x02, 0x00, 0x1E}, nil},
 	)...))
 	if err := r.Configure(meshcoreEU()); err != nil {
@@ -223,6 +226,12 @@ func TestPollReceivesFrame(t *testing.T) {
 	}
 	if frame.RSSI != -88 || frame.SNR != 12.25 {
 		t.Errorf("RSSI/SNR = %v/%v, want -88/12.25", frame.RSSI, frame.SNR)
+	}
+	if frame.SignalRSSI != -95 {
+		t.Errorf("SignalRSSI = %v, want -95 (the despread signal)", frame.SignalRSSI)
+	}
+	if diff := frame.FreqErr - 17.4375; diff < -1e-9 || diff > 1e-9 {
+		t.Errorf("FreqErr = %v, want +17.4375", frame.FreqErr)
 	}
 	if frame.Airtime != meshcoreEU().Airtime(len(payload)) {
 		t.Errorf("airtime not derived from params")
