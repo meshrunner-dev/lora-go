@@ -55,6 +55,12 @@ func (r *Radio) StartReceive() error {
 	r.progAnchor = time.Time{}
 	r.progHeader = false
 	// 0xFFFFFF selects continuous reception rather than a timeout.
+	// Continuous mode runs no RX timer, so errata §15.3 owes nothing
+	// here — but the day a timeout-bounded single RX is added, it
+	// comes due: with an implicit header the timer keeps running after
+	// a reception and must be stopped by hand (write 0x00 to register
+	// 0x0920, then clear bit 1 of 0x0944), or the radio times out
+	// mid-listen for no visible reason.
 	if _, err := r.dev.cmd(opSetRx, 0xFF, 0xFF, 0xFF); err != nil {
 		return err
 	}
