@@ -59,6 +59,10 @@ type TxResult struct {
 	At       time.Time     // when TxDone was observed
 	Airtime  time.Duration // computed channel occupancy
 	Duration time.Duration // measured SetTx→TxDone; drifting from Airtime signals a sick radio
+	// PowerDBm is the power the chip was actually programmed for —
+	// what a regulatory ledger records, independent of caller
+	// bookkeeping.
+	PowerDBm int8
 }
 
 // paEntry is one operating point of the high-power PA: the PA duty
@@ -206,7 +210,11 @@ func (r *Radio) Transmit(ctx context.Context, payload []byte, powerDBm int8) (re
 		byte(ticks>>16), byte(ticks>>8), byte(ticks)); err != nil {
 		return nil, err
 	}
-	return r.awaitTxDone(ctx, start, air)
+	res, err = r.awaitTxDone(ctx, start, air)
+	if res != nil {
+		res.PowerDBm = powerDBm
+	}
+	return res, err
 }
 
 // handBack restores the radio's posture after a transmission attempt:

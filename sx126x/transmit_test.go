@@ -72,6 +72,9 @@ func TestTransmitTranscript(t *testing.T) {
 	if res.Airtime != meshcoreEU().Airtime(len(payload)) {
 		t.Errorf("airtime = %v", res.Airtime)
 	}
+	if res.PowerDBm != -5 {
+		t.Errorf("PowerDBm = %d, want the applied -5", res.PowerDBm)
+	}
 }
 
 // Every refusal, in order of the checks: no payload, over-length,
