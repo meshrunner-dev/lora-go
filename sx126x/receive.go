@@ -15,10 +15,6 @@ import (
 // rises early and stays up yields no edge for the event that matters.
 const rxMask = irqOutcome | irqProgress
 
-// pollFloor bounds how stale a lost DIO1 edge can leave us: the receive
-// loop re-reads the chip's flags at least this often.
-const pollFloor = 20 * time.Millisecond
-
 // RxFrame is a received frame and what the radio measured about it.
 type RxFrame struct {
 	Payload []byte
@@ -164,14 +160,23 @@ func (r *Radio) finish(flags IRQ, outcome error) error {
 
 // Events exposes the DIO1 edge hint, for owners that select across
 // several clocks: an edge says "call Poll", nothing more. It can be
-// lossy — pair it with a periodic Poll so a lost edge costs latency,
-// never an event.
+// lossy — before sleeping on it, read the pin's level: the chip holds
+// DIO1 high until its IRQs are cleared, so anything that already
+// happened is visible as state even when its transition was not.
 func (r *Radio) Events() <-chan struct{} { return r.dev.pins.DIO1.Edges() }
 
-// Receive waits for the next frame: Poll wrapped in edge-or-timer
-// waiting, for callers with nothing else to schedule. The radio must be
-// receiving (see StartReceive) and stays so afterwards, so frames can
-// be read back to back.
+// Receive waits for the next frame: Poll wrapped in edge waiting, for
+// callers with nothing else to schedule. The radio must be receiving
+// (see StartReceive) and stays so afterwards, so frames can be read
+// back to back.
+//
+// The wait adds no periodic wake-ups of its own. Before each sleep the
+// DIO1 level is read once — the chip holds the line high until its
+// IRQs are cleared, so any transition missed by then is still visible
+// as state and the wait never sleeps over an event that already
+// happened. What no edge detector can promise is a transition degraded
+// electrically while already asleep; Config.Watchdog optionally bounds
+// that residue with a slow periodic poll, and stays off by default.
 func (r *Radio) Receive(ctx context.Context) (*RxFrame, error) {
 	if !r.ready {
 		return nil, ErrNotConfigured
@@ -191,16 +196,39 @@ func (r *Radio) Receive(ctx context.Context) (*RxFrame, error) {
 		return nil, fmt.Errorf("%w: mode is %s", ErrNotReceiving, mode)
 	}
 	edges := r.Events()
+	var watchdog <-chan time.Time
+	if r.cfg.Watchdog > 0 {
+		tick := time.NewTicker(r.cfg.Watchdog)
+		defer tick.Stop()
+		watchdog = tick.C
+	}
+	rechecked := false
 	for {
 		frame, err := r.Poll()
 		if frame != nil || err != nil {
 			return frame, err
 		}
+		if !rechecked {
+			// The level outlives any missed transition: high here means
+			// an IRQ latched since Poll read the flags — look again
+			// instead of sleeping over it. Guarded so a line stuck high
+			// with nothing behind it (hardware fault) parks in the wait
+			// below instead of spinning on the bus.
+			high, err := r.dev.pins.DIO1.Get()
+			if err != nil {
+				return nil, err
+			}
+			if high {
+				rechecked = true
+				continue
+			}
+		}
+		rechecked = false
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-edges:
-		case <-time.After(pollFloor):
+		case <-watchdog:
 		}
 	}
 }

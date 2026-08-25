@@ -37,6 +37,9 @@ type chip struct {
 	steps    []xfer
 	i        int
 	sleeping bool // BUSY held high until the next transfer
+	// dio1Level is what the DIO1 pin reads back — the held IRQ line a
+	// level check consults when no edge was delivered.
+	dio1Level bool
 }
 
 func (c *chip) transfer(tx, rx []byte) error {
@@ -96,7 +99,7 @@ type fakeDIO1 struct {
 	edges chan struct{}
 }
 
-func (p *fakeDIO1) Get() (bool, error)     { return false, nil }
+func (p *fakeDIO1) Get() (bool, error)     { return p.c.dio1Level, nil }
 func (p *fakeDIO1) Edges() <-chan struct{} { return p.edges }
 func (p *fakeDIO1) Close() error           { return nil }
 

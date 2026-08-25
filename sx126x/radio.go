@@ -98,6 +98,16 @@ type Config struct {
 	// the cost of needing the inductor the module may or may not have.
 	UseDCDC bool
 
+	// Watchdog optionally re-polls the chip's flags while Receive
+	// waits, at this period. Zero — the default — trusts the edge
+	// path: Receive already reads the DIO1 level before it sleeps, so
+	// every event that happened by then is caught without a timer.
+	// What a watchdog adds is recovery from a transition degraded
+	// electrically while asleep — a signal-integrity fault no edge
+	// detector can promise to see. Battery hosts leave it off; a
+	// deployment that doubts its wiring sets a few seconds.
+	Watchdog time.Duration
+
 	// RXBoostedGain trades current for sensitivity in the low-noise
 	// amplifier (datasheet 9.6). Worth it on a mains-powered repeater.
 	RXBoostedGain bool
