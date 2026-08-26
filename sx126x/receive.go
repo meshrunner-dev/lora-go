@@ -281,6 +281,18 @@ func (r *Radio) receiveProgress(flags IRQ) (preamble, header bool, err error) {
 	if r.progAnchor.IsZero() || (header && !r.progHeader) {
 		// First sighting, or the frame just committed to a header:
 		// (re)anchor the clock for the next stage.
+		//
+		// The clock starts when the host first looks, not when the chip
+		// latched — deliberately. An owner that polls continuously sees
+		// the two coincide; one that sleeps between polls (a duty-saving
+		// receive loop) may meet a marker seconds old and grant it a
+		// full fresh window, holding the channel "busy" for longer than
+		// the event deserved. That is the safe error: anchoring any
+		// earlier would expire the markers of a frame that is genuinely
+		// still in the air — a bare progress marker with no outcome flag
+		// is either dead noise or a live reception, and nothing here can
+		// tell them apart. Callers pay in retries, never in frames
+		// transmitted over someone else's.
 		r.progAnchor = now
 		r.progHeader = header
 	}
