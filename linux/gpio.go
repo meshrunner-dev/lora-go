@@ -89,13 +89,14 @@ type EdgeLine struct {
 	l      *gpiocdev.Line
 	offset int
 	edges  chan struct{}
-	// lastEdge is the kernel's timestamp for the most recent edge, as
-	// wall-clock unix nanoseconds; zero until the first edge. The
-	// kernel stamps events in its interrupt path, so this is
-	// microsecond truth unstretched by scheduling.
+	// lastEdge is the kernel's timestamp for the most recent edge, kept
+	// exactly as the kernel gave it: nanoseconds on the monotonic
+	// clock, zero until the first edge. The kernel stamps events in its
+	// interrupt path, so this is microsecond truth unstretched by
+	// scheduling — and storing it unconverted keeps it true across a
+	// wall-clock step, which a host without an RTC takes as soon as it
+	// finds the network.
 	lastEdge atomic.Int64
-	// bootWall anchors the kernel's monotonic event clock to the wall.
-	bootWall time.Time
 }
 
 var _ lora.InterruptPin = (*EdgeLine)(nil)
@@ -106,18 +107,11 @@ var _ lora.InterruptPin = (*EdgeLine)(nil)
 // delivery.
 func Interrupt(chip string, offset int) (*EdgeLine, error) {
 	g := &EdgeLine{offset: offset, edges: make(chan struct{}, 1)}
-	// Kernel event timestamps count from boot on the monotonic clock;
-	// anchor that origin to the wall once, here.
-	var mono unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono); err != nil {
-		return nil, fmt.Errorf("lora/linux: monotonic clock: %w", err)
-	}
-	g.bootWall = time.Now().Add(-time.Duration(mono.Nano()))
 	l, err := gpiocdev.RequestLine(chip, offset,
 		gpiocdev.WithRisingEdge,
 		gpiocdev.WithConsumer("lora"),
 		gpiocdev.WithEventHandler(func(ev gpiocdev.LineEvent) {
-			g.lastEdge.Store(g.bootWall.Add(ev.Timestamp).UnixNano())
+			g.lastEdge.Store(int64(ev.Timestamp))
 			select {
 			case g.edges <- struct{}{}:
 			default: // a pending signal already says "go look"
@@ -131,13 +125,24 @@ func Interrupt(chip string, offset int) (*EdgeLine, error) {
 }
 
 // LastEdge reports the kernel's timestamp for the most recent rising
-// edge; ok is false until one has been seen.
+// edge, as a wall-clock instant; ok is false until one has been seen.
+//
+// The conversion happens here, against a monotonic reading taken now,
+// rather than against an origin captured at start-up: on a host whose
+// clock steps once the network answers — every Raspberry Pi without an
+// RTC — an origin captured before the step would be wrong by the step
+// for the life of the process, and every edge with it.
 func (g *EdgeLine) LastEdge() (time.Time, bool) {
-	ns := g.lastEdge.Load()
-	if ns == 0 {
+	edge := g.lastEdge.Load()
+	if edge == 0 {
 		return time.Time{}, false
 	}
-	return time.Unix(0, ns), true
+	var mono unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono); err != nil {
+		return time.Time{}, false
+	}
+	age := time.Duration(mono.Nano() - edge)
+	return time.Now().Add(-age), true
 }
 
 // Get reads the line's current level.

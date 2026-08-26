@@ -61,6 +61,7 @@ func (r *Radio) StartReceive() error {
 	}
 	r.progAnchor = time.Time{}
 	r.progHeader = false
+	r.edgeFloor = r.now()
 	// 0xFFFFFF selects continuous reception rather than a timeout.
 	// Continuous mode runs no RX timer, so errata §15.3 owes nothing
 	// here — but the day a timeout-bounded single RX is added, it
@@ -172,6 +173,9 @@ func (r *Radio) finish(flags IRQ, outcome error) error {
 	}
 	r.progAnchor = time.Time{}
 	r.progHeader = false
+	// This outcome is consumed: any edge up to now belongs to it, and
+	// must not date the next frame.
+	r.edgeFloor = r.now()
 	return outcome
 }
 
@@ -559,11 +563,18 @@ type edgeClock interface {
 const edgeFreshness = time.Second
 
 // frameTime dates a completed frame: the kernel-stamped DIO1 edge when
-// the transport offers one fresh enough, else the driver's read time.
+// the transport offers one, else the driver's read time.
+//
+// The edge must post-date the last time reception was armed or an
+// outcome consumed. Without that floor, a frame collected by a poll
+// that beat the transport's own event goroutine would be dated with
+// the *previous* frame's edge — recent enough to pass a freshness
+// window, and wrong by exactly one inter-frame gap.
 func (r *Radio) frameTime() time.Time {
 	at := r.now()
 	if ec, ok := r.dev.pins.DIO1.(edgeClock); ok {
-		if e, ok := ec.LastEdge(); ok && e.Before(at) && at.Sub(e) < edgeFreshness {
+		if e, ok := ec.LastEdge(); ok && e.Before(at) && e.After(r.edgeFloor) &&
+			at.Sub(e) < edgeFreshness {
 			return e
 		}
 	}

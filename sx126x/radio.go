@@ -139,6 +139,10 @@ type Radio struct {
 	// header has been seen since. Everything else is read off the chip.
 	progAnchor time.Time
 	progHeader bool
+	// edgeFloor is the last instant reception was armed or an outcome
+	// consumed: an edge older than it belongs to a frame already dealt
+	// with and must not date the next one.
+	edgeFloor time.Time
 
 	// now is swappable so tests can drive the expiry clock.
 	now func() time.Time
