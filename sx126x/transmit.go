@@ -42,8 +42,11 @@ func (v ChipVariant) String() string {
 	}
 }
 
-// powerRange returns the chip-side output range in dBm.
-func (v ChipVariant) powerRange() (minDBm, maxDBm int8) {
+// PowerRange is the chip-side output range in dBm: what this part can
+// actually be programmed for, whatever ceiling an integrator declares
+// on top of it. Exported so a caller can judge a configured ceiling —
+// or a power resolved from one — before a transmission discovers it.
+func (v ChipVariant) PowerRange() (minDBm, maxDBm int8) {
 	if v == SX1261 {
 		return -17, 15
 	}
@@ -102,7 +105,7 @@ var paTableSX1268 = [32]paEntry{
 // paConfigFor maps a chip variant and target power to the PA operating
 // point: SetPaConfig's duty/hpMax/deviceSel and SetTxParams' value.
 func paConfigFor(chip ChipVariant, dBm int8) (duty, hpMax, deviceSel byte, val int8, err error) {
-	minP, maxP := chip.powerRange()
+	minP, maxP := chip.PowerRange()
 	if dBm < minP || dBm > maxP {
 		return 0, 0, 0, 0, fmt.Errorf("%w: %d dBm is outside the %s range (%d..%d)",
 			ErrBadConfig, dBm, chip, minP, maxP)
