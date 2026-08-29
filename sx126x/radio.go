@@ -302,12 +302,8 @@ func (r *Radio) Version() string { return r.version }
 // reception, so call StartReceive after. While a frame is arriving or
 // unread, Configure refuses rather than destroy it.
 func (r *Radio) Configure(p lora.Params) error {
-	if err := p.Validate(); err != nil {
+	if err := ValidateParams(p); err != nil {
 		return err
-	}
-	if p.Frequency < 150_000_000 || p.Frequency > 960_000_000 {
-		return fmt.Errorf("%w: %d Hz is outside the SX126x synthesiser range (150-960 MHz)",
-			ErrBadConfig, p.Frequency)
 	}
 	if r.ready {
 		if err := r.guardDestructive(); err != nil {
@@ -319,6 +315,23 @@ func (r *Radio) Configure(p lora.Params) error {
 	}
 	r.params = p
 	r.ready = true
+	return nil
+}
+
+// ValidateParams is the whole of Configure's judgement of a channel,
+// with no hardware behind it: the modulation's own validity, then the
+// SX126x synthesiser's 150–960 MHz. Exported so an integrator's dry
+// run can refuse exactly what Configure will refuse — a bound that
+// lives only inside Configure is one every preflight re-invents, and
+// the copies drift.
+func ValidateParams(p lora.Params) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	if p.Frequency < 150_000_000 || p.Frequency > 960_000_000 {
+		return fmt.Errorf("%w: %d Hz is outside the SX126x synthesiser range (150-960 MHz)",
+			ErrBadConfig, p.Frequency)
+	}
 	return nil
 }
 
