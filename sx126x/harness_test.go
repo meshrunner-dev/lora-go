@@ -40,6 +40,9 @@ type chip struct {
 	// dio1Level is what the DIO1 pin reads back — the held IRQ line a
 	// level check consults when no edge was delivered.
 	dio1Level bool
+	// failAt fails the transfer whose step carries this description,
+	// once, so a test can put a bus fault exactly where it means to.
+	failAt map[string]error
 }
 
 func (c *chip) transfer(tx, rx []byte) error {
@@ -58,6 +61,13 @@ func (c *chip) transfer(tx, rx []byte) error {
 		if w := uint16(tx[1])<<8 | uint16(tx[2]); w == 0x03FF {
 			c.t.Errorf("step %d (%s): blanket ClearIrqStatus(0x03FF)", c.i-1, st.desc)
 		}
+	}
+	// The bus giving way partway through a sequence, named by the
+	// step it gives way on: what the driver still knows afterwards is
+	// the whole question on some of these paths.
+	if err := c.failAt[st.desc]; err != nil {
+		delete(c.failAt, st.desc)
+		return err
 	}
 	if tx[0] == opSetSleep {
 		c.sleeping = true

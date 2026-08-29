@@ -19,10 +19,11 @@ func txConfig() Config {
 // for -5 dBm, the per-frame payload length, the airtime-scaled chip
 // timeout — and the radio handed back exactly as found, reception
 // length restored and RX re-armed.
-func TestTransmitTranscript(t *testing.T) {
-	payload := []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x42}
+// txScript is one nominal transmission of payload at -5 dBm on the
+// SX1262: guard, standby, PA, staging, keying, TxDone, hand-back.
+func txScript(payload []byte) []xfer {
 	steps := append(configureScript(), startReceiveScript()...)
-	steps = append(steps,
+	return append(steps,
 		irqReadStep(0),   // guard: nothing latched
 		statusStep(stRX), // radio was receiving
 		xfer{"standby for TX", []byte{0x80, 0x00}, nil},
@@ -56,7 +57,11 @@ func TestTransmitTranscript(t *testing.T) {
 		xfer{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
 			[]byte{stOK, stOK, stOK, stOK, 0x0D}},
 	)
-	steps = append(steps, startReceiveScript()...)
+}
+
+func TestTransmitTranscript(t *testing.T) {
+	payload := []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x42}
+	steps := append(txScript(payload), startReceiveScript()...)
 	r, c := openRig(t, txConfig(), steps)
 	if err := r.Configure(meshcoreEU()); err != nil {
 		t.Fatalf("Configure: %v", err)
@@ -74,6 +79,45 @@ func TestTransmitTranscript(t *testing.T) {
 	}
 	if res.PowerDBm != -5 {
 		t.Errorf("PowerDBm = %d, want the applied -5", res.PowerDBm)
+	}
+}
+
+func TestTxDoneSurvivesAFaultAfterIt(t *testing.T) {
+	// TxDone proves the frame is on the air and finished. Nothing
+	// after it can un-transmit that frame, so a bus fault clearing
+	// the interrupt — or handing the radio back — must return the
+	// result beside the error: an integrator charging a regulatory
+	// budget cannot be told an emission it made never happened.
+	busFault := errors.New("spi bus gave way")
+	for _, c := range []struct{ name, step string }{
+		{"clearing the interrupt", "clear TxDone"},
+		{"handing the radio back", "standby (hand-back)"},
+	} {
+		payload := []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x42}
+		steps := append(txScript(payload), startReceiveScript()...)
+		r, chip := openRig(t, txConfig(), steps)
+		if err := r.Configure(meshcoreEU()); err != nil {
+			t.Fatalf("%s: Configure: %v", c.name, err)
+		}
+		if err := r.StartReceive(); err != nil {
+			t.Fatalf("%s: StartReceive: %v", c.name, err)
+		}
+		chip.failAt = map[string]error{c.step: busFault}
+
+		res, err := r.Transmit(context.Background(), payload, -5)
+		if !errors.Is(err, busFault) {
+			t.Errorf("%s: error = %v, want the bus fault", c.name, err)
+		}
+		if res == nil {
+			t.Errorf("%s: TxDone was observed but its TxResult was lost", c.name)
+			continue
+		}
+		if res.Airtime != meshcoreEU().Airtime(len(payload)) {
+			t.Errorf("%s: airtime = %v", c.name, res.Airtime)
+		}
+		if res.PowerDBm != -5 {
+			t.Errorf("%s: PowerDBm = %d", c.name, res.PowerDBm)
+		}
 	}
 }
 

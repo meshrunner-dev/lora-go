@@ -55,6 +55,12 @@ func (v ChipVariant) powerRange() (minDBm, maxDBm int8) {
 const MaxTxPowerZero int8 = -128
 
 // TxResult is one completed transmission.
+//
+// A non-nil result beside a non-nil error is a frame that reached the
+// air and a radio that then failed to put itself away: the emission
+// happened, and an integrator charging a regulatory budget owes it
+// the airtime whatever the chip did afterwards. A nil result means
+// nothing was radiated.
 type TxResult struct {
 	At       time.Time     // when TxDone was observed
 	Airtime  time.Duration // computed channel occupancy
@@ -146,6 +152,9 @@ func (r *Radio) txPowerCap() (int8, bool) {
 // reception in progress is the exact collision listen-before-talk
 // exists to avoid (run AssessChannel first for the neighbours'
 // transmissions this radio is not receiving).
+//
+// Once TxDone is observed the result exists, and it is returned even
+// when a later step fails: see TxResult.
 func (r *Radio) Transmit(ctx context.Context, payload []byte, powerDBm int8) (res *TxResult, err error) {
 	duty, hpMax, deviceSel, paVal, err := r.checkTransmit(payload, powerDBm)
 	if err != nil {
@@ -276,18 +285,30 @@ func (r *Radio) awaitTxDone(ctx context.Context, start time.Time, air time.Durat
 		return nil, fmt.Errorf("sx126x: transmit: %w", err)
 	}
 	at := r.now()
+	// TxDone is the proof, and it is built the moment it is observed.
+	// Everything after this line is the chip's bookkeeping — clearing
+	// the interrupt, reading the error word — and none of it can
+	// un-transmit a frame that is already on the air and finished. An
+	// integrator counting airtime against a regulatory budget must be
+	// told about that emission even when the radio then falls over,
+	// so the result travels out beside the error rather than instead
+	// of it.
+	var res *TxResult
+	if flags&IRQTxDone != 0 {
+		res = &TxResult{At: at, Airtime: air, Duration: at.Sub(start)}
+	}
 	if err := r.dev.clearIRQ(flags & txFlags); err != nil {
-		return nil, err
+		return res, err
 	}
 	if flags&IRQTimeout != 0 {
 		// The transmission was stopped by the chip. The error word says
 		// whether the PA even ramped.
 		if derr := r.dev.checkDeviceErrors("transmit"); derr != nil {
-			return nil, fmt.Errorf("%w: %w", ErrTimeout, errors.Unwrap(derr))
+			return res, fmt.Errorf("%w: %w", ErrTimeout, errors.Unwrap(derr))
 		}
-		return nil, fmt.Errorf("sx126x: transmit: %w", ErrTimeout)
+		return res, fmt.Errorf("sx126x: transmit: %w", ErrTimeout)
 	}
-	return &TxResult{At: at, Airtime: air, Duration: at.Sub(start)}, nil
+	return res, nil
 }
 
 // applyTXPower programs the amplifier for one operating point. Order
