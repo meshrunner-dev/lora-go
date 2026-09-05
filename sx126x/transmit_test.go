@@ -27,16 +27,14 @@ func txScript(payload []byte) []xfer {
 		irqReadStep(0),   // guard: nothing latched
 		statusStep(stRX), // radio was receiving
 		xfer{"standby for TX", []byte{0x80, 0x00}, nil},
-		// applyTXPower: §15.2 clamping (read 0x08, write |0x1E), OCP
-		// saved and restored around SetPaConfig, then the measured
-		// -5 dBm point of the SX1262 table: duty 1, hpMax 1, value 6.
+		// applyTXPower: §15.2 clamping (read 0x08, write |0x1E), then
+		// the measured -5 dBm point of the SX1262 table: duty 1,
+		// hpMax 1, value 6. No OCP write — this board sets no
+		// CurrentLimitMA, so SetPaConfig's own default stands.
 		xfer{"read TX clamp config", []byte{0x1D, 0x08, 0xD8, 0x00, 0x00},
 			[]byte{stOK, stOK, stOK, stOK, 0x08}},
 		xfer{"errata 15.2: clamp |= 0x1E", []byte{0x0D, 0x08, 0xD8, 0x1E}, nil},
-		xfer{"save OCP", []byte{0x1D, 0x08, 0xE7, 0x00, 0x00},
-			[]byte{stOK, stOK, stOK, stOK, 0x38}},
 		xfer{"PA config -5 dBm (measured point)", []byte{0x95, 0x01, 0x01, 0x00, 0x01}, nil},
-		xfer{"restore OCP", []byte{0x0D, 0x08, 0xE7, 0x38}, nil},
 		xfer{"TX params: value 6, 200us ramp", []byte{0x8E, 0x06, 0x04}, nil},
 		// Per-frame packet params: length 5, not the RX 0xFF.
 		xfer{"packet params for this frame", []byte{0x8C, 0x00, 0x20, 0x00, 0x05, 0x01, 0x00}, nil},
@@ -224,10 +222,7 @@ func TestTransmitChipTimeout(t *testing.T) {
 		xfer{"standby for TX", []byte{0x80, 0x00}, nil},
 		xfer{"read TX clamp config", []byte{0x1D, 0x08, 0xD8, 0x00, 0x00},
 			[]byte{stOK, stOK, stOK, stOK, 0x1E}}, // already fixed: no write
-		xfer{"save OCP", []byte{0x1D, 0x08, 0xE7, 0x00, 0x00},
-			[]byte{stOK, stOK, stOK, stOK, 0x38}},
 		xfer{"PA config", []byte{0x95, 0x01, 0x01, 0x00, 0x01}, nil},
-		xfer{"restore OCP", []byte{0x0D, 0x08, 0xE7, 0x38}, nil},
 		xfer{"TX params", []byte{0x8E, 0x06, 0x04}, nil},
 		xfer{"packet params len 1", []byte{0x8C, 0x00, 0x20, 0x00, 0x01, 0x01, 0x00}, nil},
 		xfer{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},
@@ -280,11 +275,8 @@ func TestTransmitSX1261(t *testing.T) {
 		statusStep(stRX),
 		xfer{"standby for TX", []byte{0x80, 0x00}, nil},
 		// No clamp read/write: §15.2 is SX1262/68 only.
-		xfer{"save OCP", []byte{0x1D, 0x08, 0xE7, 0x00, 0x00},
-			[]byte{stOK, stOK, stOK, stOK, 0x18}},
 		// 15 dBm special case: duty 6, hpMax 0, deviceSel 1 (SX1261 PA).
 		xfer{"PA config 15 dBm SX1261", []byte{0x95, 0x06, 0x00, 0x01, 0x01}, nil},
-		xfer{"restore OCP", []byte{0x0D, 0x08, 0xE7, 0x18}, nil},
 		xfer{"TX params: value 14, 200us ramp", []byte{0x8E, 0x0E, 0x04}, nil},
 		xfer{"packet params for this frame", []byte{0x8C, 0x00, 0x20, 0x00, 0x05, 0x01, 0x00}, nil},
 		xfer{"read IQ polarity", []byte{0x1D, 0x07, 0x36, 0x00, 0x00},

@@ -315,10 +315,15 @@ func (r *Radio) awaitTxDone(ctx context.Context, start time.Time, air time.Durat
 }
 
 // applyTXPower programs the amplifier for one operating point. Order
-// matters: SetPaConfig resets the overcurrent protection, so OCP is
-// saved before and restored after; the errata §15.2 clamping fix is
-// applied first for the high-power variants (antenna-mismatch
-// resistance, SX1262/68 only).
+// matters: the errata §15.2 clamping fix comes first, and only for
+// the high-power variants (antenna-mismatch resistance, SX1262/68),
+// then the PA operating point, then the ramp.
+//
+// The over-current ceiling is SetPaConfig's to set. It re-arms the
+// part's own default on every call — 140 mA on the SX1262 and
+// SX1268, 60 mA on the SX1261 (datasheet table 5-2) — which is the
+// ceiling each part chose for its own amplifier, so nothing here
+// writes over it.
 func (r *Radio) applyTXPower(duty, hpMax, deviceSel byte, paVal int8) error {
 	if r.cfg.Chip == SX1262 || r.cfg.Chip == SX1268 {
 		clamp, err := r.dev.readRegister(regTxClampConfig, 1)
@@ -331,18 +336,11 @@ func (r *Radio) applyTXPower(duty, hpMax, deviceSel byte, paVal int8) error {
 			}
 		}
 	}
-	ocp, err := r.dev.readRegister(regOCPConfig, 1)
-	if err != nil {
-		return err
-	}
 	if _, err := r.dev.cmd(opSetPaConfig, duty, hpMax, deviceSel, 0x01); err != nil {
-		return err
-	}
-	if err := r.dev.writeRegister(regOCPConfig, ocp[0]); err != nil {
 		return err
 	}
 	// 200 us ramp: the reference value, and a spectral-mask parameter —
 	// not a place for creativity.
-	_, err = r.dev.cmd(opSetTxParams, byte(paVal), 0x04)
+	_, err := r.dev.cmd(opSetTxParams, byte(paVal), 0x04)
 	return err
 }
